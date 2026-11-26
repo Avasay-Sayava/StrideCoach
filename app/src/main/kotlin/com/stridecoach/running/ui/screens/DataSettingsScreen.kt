@@ -7,9 +7,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -18,8 +18,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.data.repository.CoachPreferences
+import com.stridecoach.running.ui.components.StatusPill
+import com.stridecoach.running.ui.components.StrideCard
+import com.stridecoach.running.ui.theme.PaceTooFast
+import com.stridecoach.running.ui.theme.RunGreen
+import com.stridecoach.running.ui.theme.RunMuted
 
 @Composable
 fun DataSettingsScreen(
@@ -40,15 +46,8 @@ fun DataSettingsScreen(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        DataPortabilityCard(
-            busy = isImporting,
-            summary = lastImportSummary,
-            runs = runCount,
-            walkDays = walkDayCount,
-            onImpBackup = onImportBackupClick,
-            onExpBackup = onExportBackupClick,
-            onImpTimeline = onImportTimelineClick
-        )
+        Text("Data & Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        DataPortabilityCard(isImporting, lastImportSummary, runCount, walkDayCount, onImportBackupClick, onExportBackupClick, onImportTimelineClick)
         BatteryProtectionCard(isBatteryUnrestricted, onRequestBatteryUnrestricted)
         ImportGuideCard()
         CoachSettingsCard(preferences, onUpdatePrefs)
@@ -65,66 +64,59 @@ private fun DataPortabilityCard(
     onExpBackup: () -> Unit,
     onImpTimeline: () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Lossless Data Import & Export", style = MaterialTheme.typography.titleMedium)
-            Text("$runs runs • $walkDays walk days stored locally", style = MaterialTheme.typography.labelLarge)
-            if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            if (!summary.isNullOrBlank()) Text(summary, style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onImpBackup, enabled = !busy) { Text("Import .backup") }
-                OutlinedButton(onClick = onExpBackup, enabled = !busy) { Text("Export .backup") }
-            }
-            Button(onClick = onImpTimeline, enabled = !busy) { Text("Import Google Timeline.json") }
+    StrideCard {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Lossless Data Import & Export", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StatusPill("$runs runs • $walkDays walks", RunGreen)
         }
+        if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = RunGreen)
+        if (!summary.isNullOrBlank()) Text(summary, style = MaterialTheme.typography.bodySmall, color = RunGreen)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onImpBackup, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Import .backup") }
+            OutlinedButton(onClick = onExpBackup, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Export .backup") }
+        }
+        Button(onClick = onImpTimeline, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Import Google Timeline.json") }
     }
 }
 
 @Composable
 private fun BatteryProtectionCard(unrestricted: Boolean, onRequest: () -> Unit) {
-    val status = if (unrestricted) "Status: Unrestricted (Safe for lock-screen GPS)" else "Status: Optimized (Samsung One UI may pause GPS)"
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Samsung / Android Battery Protection", style = MaterialTheme.typography.titleMedium)
-            Text(status, style = MaterialTheme.typography.bodySmall)
-            if (!unrestricted) {
-                Button(onClick = onRequest) { Text("Allow Unrestricted Battery") }
-            }
+    val msg = if (unrestricted) "Unrestricted (Safe for lock-screen GPS)" else "Optimized (Samsung One UI may pause GPS)"
+    StrideCard {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Samsung Battery Guard", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StatusPill(if (unrestricted) "Safe" else "Action Needed", if (unrestricted) RunGreen else PaceTooFast)
+        }
+        Text(msg, style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        if (!unrestricted) {
+            Button(onClick = onRequest, shape = RoundedCornerShape(999.dp)) { Text("Allow Unrestricted Battery") }
         }
     }
 }
 
 @Composable
 private fun ImportGuideCard() {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("How to Import Your Existing Data", style = MaterialTheme.typography.titleMedium)
-            Text("1. Running Tracker (Play Store): Open Settings → Backup/Export → save running-tracker-*.backup, then tap Import .backup (or Open With StrideCoach).", style = MaterialTheme.typography.bodySmall)
-            Text("2. Google Maps Timeline: On Android open Settings → Location → Location Services → Timeline → Export Timeline data (Timeline.json), then tap Import Google Timeline.json.", style = MaterialTheme.typography.bodySmall)
-        }
+    StrideCard {
+        Text("How to Import Your Existing Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("1. Running Tracker (Play Store): Settings → Backup/Export → save .backup, then tap Import .backup.", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text("2. Google Maps Timeline: Settings → Location → Timeline → Export Timeline data (Timeline.json).", style = MaterialTheme.typography.bodySmall, color = RunMuted)
     }
 }
 
 @Composable
 private fun CoachSettingsCard(p: CoachPreferences, onUpdate: ((CoachPreferences) -> CoachPreferences) -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Audio, Haptics & Lock-Screen Safety", style = MaterialTheme.typography.titleMedium)
-            SettingToggle("English Voice Coach (TTS)", p.voiceCoachEnabled) { v -> onUpdate { it.copy(voiceCoachEnabled = v) } }
-            SettingToggle("Haptic Vibration Cues", p.hapticCuesEnabled) { v -> onUpdate { it.copy(hapticCuesEnabled = v) } }
-            SettingToggle("Smart Auto-Pause When Stopped", p.autoPauseEnabled) { v -> onUpdate { it.copy(autoPauseEnabled = v) } }
-            SettingToggle("Keep Screen Awake During Run", p.keepScreenAwake) { v -> onUpdate { it.copy(keepScreenAwake = v) } }
-        }
+    StrideCard {
+        Text("Audio, Haptics & Lock-Screen Safety", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        SettingToggle("English Voice Coach (TTS)", p.voiceCoachEnabled) { v -> onUpdate { it.copy(voiceCoachEnabled = v) } }
+        SettingToggle("Haptic Vibration Cues", p.hapticCuesEnabled) { v -> onUpdate { it.copy(hapticCuesEnabled = v) } }
+        SettingToggle("Smart Auto-Pause When Stopped", p.autoPauseEnabled) { v -> onUpdate { it.copy(autoPauseEnabled = v) } }
+        SettingToggle("Keep Screen Awake During Run", p.keepScreenAwake) { v -> onUpdate { it.copy(keepScreenAwake = v) } }
     }
 }
 
 @Composable
 private fun SettingToggle(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
         Text(title, style = MaterialTheme.typography.bodyMedium)
         Switch(checked = checked, onCheckedChange = onChange)
     }

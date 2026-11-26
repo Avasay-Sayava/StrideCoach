@@ -1,5 +1,6 @@
 package com.stridecoach.running.ui.screens
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,7 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -25,6 +25,13 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.domain.engine.EncodedPolylineCodec
 import com.stridecoach.running.core.domain.engine.PersonalRecord
@@ -36,9 +43,14 @@ import com.stridecoach.running.core.domain.model.RunRecord
 import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.core.domain.model.formatPace
 import com.stridecoach.running.ui.CoachUiState
+import com.stridecoach.running.ui.components.KpiStatTile
+import com.stridecoach.running.ui.components.SmoothPolylineCanvas
+import com.stridecoach.running.ui.components.StrideCard
 import com.stridecoach.running.ui.theme.PaceOnTarget
 import com.stridecoach.running.ui.theme.PaceTooFast
 import com.stridecoach.running.ui.theme.PaceTooSlow
+import com.stridecoach.running.ui.theme.RunGreen
+import com.stridecoach.running.ui.theme.RunMuted
 import com.stridecoach.running.ui.theme.WalkLoadAccent
 import java.time.DayOfWeek
 
@@ -58,26 +70,73 @@ fun HistoryAnalyticsScreen(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        Text("History & Analytics", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         selectedRun?.let { RunDetailCard(it, pace, stats, onTrimTail, onExportGpx) }
+        AnalyticsKpiGrid(state)
+        if (state.runs.size >= 2) DistanceTrendCard(state.runs.take(8).reversed())
         WeeklyLoadCard(state.weeklyLoad)
         WalkingHeatmapCard(state.weekdayWalkHeatmap)
         if (state.personalRecords.isNotEmpty()) PersonalRecordsCard(state.personalRecords)
-        SavedRunsCard(state.runs, onSelectRun)
+        SavedRunsSection(state.runs, pace, onSelectRun)
+    }
+}
+
+@Composable
+private fun AnalyticsKpiGrid(state: CoachUiState) {
+    val totalRunKm = state.runs.sumOf { it.distanceMeters } / 1000.0
+    val avgPace = if (state.runs.isEmpty()) 0 else state.runs.map { it.paceSecondsPerKm }.filter { it > 0 }.average().toInt()
+    val avgWalkKm = if (state.walkLogs.isEmpty()) 0.0 else state.walkLogs.map { it.km() }.average()
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        KpiStatTile("Total Run", "%.1f km".format(totalRunKm), Modifier.weight(1f), RunGreen)
+        KpiStatTile("Runs Logged", "${state.runs.size}", Modifier.weight(1f))
+    }
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        KpiStatTile("Avg Pace", "${formatPace(avgPace)} /km", Modifier.weight(1f))
+        KpiStatTile("Avg Walk/Day", "%.1f km".format(avgWalkKm), Modifier.weight(1f), WalkLoadAccent)
+    }
+}
+
+@Composable
+private fun DistanceTrendCard(recent: List<RunRecord>) {
+    StrideCard {
+        Text("Recent Run Distances (km)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Canvas(modifier = Modifier.fillMaxWidth().height(120.dp)) {
+            val maxKm = recent.maxOf { it.km() }.coerceAtLeast(1.0).toFloat()
+            val stepX = size.width / (recent.size - 1).coerceAtLeast(1)
+            val pts = recent.mapIndexed { i, r ->
+                val y = size.height - ((r.km().toFloat() / maxKm) * (size.height - 20f)) - 10f
+                Offset(i * stepX, y)
+            }
+            val line = Path().apply {
+                moveTo(pts.first().x, pts.first().y)
+                for (i in 0 until pts.lastIndex) {
+                    val cx = (pts[i].x + pts[i + 1].x) / 2f
+                    cubicTo(cx, pts[i].y, cx, pts[i + 1].y, pts[i + 1].x, pts[i + 1].y)
+                }
+            }
+            val fill = Path().apply {
+                addPath(line)
+                lineTo(pts.last().x, size.height)
+                lineTo(pts.first().x, size.height)
+                close()
+            }
+            drawPath(fill, Brush.verticalGradient(listOf(RunGreen.copy(alpha = 0.35f), Color.Transparent)))
+            drawPath(line, RunGreen, style = Stroke(width = 5f, cap = StrokeCap.Round))
+            pts.forEach { drawCircle(Color.White, radius = 5f, center = it) }
+        }
     }
 }
 
 @Composable
 private fun WeeklyLoadCard(weeks: List<WeeklyLoadPoint>) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Combined On-Feet Load (Run + Walk)", style = MaterialTheme.typography.titleMedium)
-            if (weeks.isEmpty()) {
-                Text("Import runs or Timeline.json to view weekly load.", style = MaterialTheme.typography.bodySmall)
-                return@Column
-            }
-            val maxM = weeks.maxOf { it.totalMeters }.coerceAtLeast(1_000)
-            weeks.takeLast(6).forEach { w -> WeeklyBarRow(w, maxM) }
+    StrideCard {
+        Text("Combined On-Feet Load (Run + Walk)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        if (weeks.isEmpty()) {
+            Text("Import runs or Timeline.json to view weekly load.", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+            return@StrideCard
         }
+        val maxM = weeks.maxOf { it.totalMeters }.coerceAtLeast(1_000)
+        weeks.takeLast(6).forEach { w -> WeeklyBarRow(w, maxM) }
     }
 }
 
@@ -85,29 +144,19 @@ private fun WeeklyLoadCard(weeks: List<WeeklyLoadPoint>) {
 private fun WeeklyBarRow(w: WeeklyLoadPoint, maxM: Int) {
     val rFrac = (w.runMeters.toFloat() / maxM).coerceIn(0f, 1f)
     val wFrac = (w.walkMeters.toFloat() / maxM).coerceIn(0f, 1f)
-    val label = "${w.weekLabel}: ${"%.1f".format(w.runMeters / 1000.0)} km run + ${"%.1f".format(w.walkMeters / 1000.0)} km walk"
-    Text(label, style = MaterialTheme.typography.bodySmall)
-    Row(modifier = Modifier.fillMaxWidth().height(10.dp)) {
-        if (rFrac > 0f) Box(Modifier.fillMaxWidth(rFrac).height(10.dp).background(PaceOnTarget, RoundedCornerShape(4.dp)))
-        if (wFrac > 0f) Box(Modifier.fillMaxWidth(wFrac).height(10.dp).background(WalkLoadAccent, RoundedCornerShape(4.dp)))
+    Text("${w.weekLabel}: ${"%.1f".format(w.runMeters / 1000.0)} km run + ${"%.1f".format(w.walkMeters / 1000.0)} km walk", style = MaterialTheme.typography.bodySmall)
+    Row(modifier = Modifier.fillMaxWidth().height(8.dp)) {
+        if (rFrac > 0f) Box(Modifier.fillMaxWidth(rFrac).height(8.dp).background(RunGreen, RoundedCornerShape(4.dp)))
+        if (wFrac > 0f) Box(Modifier.fillMaxWidth(wFrac).height(8.dp).background(WalkLoadAccent, RoundedCornerShape(4.dp)))
     }
 }
 
 @Composable
 private fun WalkingHeatmapCard(map: Map<DayOfWeek, Int>) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Day-of-Week Walking Heatmap (Avg km)", style = MaterialTheme.typography.titleMedium)
-            HeatmapRow(map)
-        }
-    }
-}
-
-@Composable
-private fun HeatmapRow(map: Map<DayOfWeek, Int>) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        DayOfWeek.entries.forEach { d ->
-            HeatmapCell(d.name.take(3), (map[d] ?: 0) / 1000.0)
+    StrideCard {
+        Text("Weekday Walking Heatmap (Avg km)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            DayOfWeek.entries.forEach { d -> HeatmapCell(d.name.take(3), (map[d] ?: 0) / 1000.0) }
         }
     }
 }
@@ -115,93 +164,88 @@ private fun HeatmapRow(map: Map<DayOfWeek, Int>) {
 @Composable
 private fun HeatmapCell(day: String, km: Double) {
     Column {
-        Text(day, style = MaterialTheme.typography.labelSmall)
-        Text("%.1f".format(km), style = MaterialTheme.typography.bodySmall)
+        Text(day, style = MaterialTheme.typography.labelSmall, color = RunMuted)
+        Text("%.1f".format(km), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
 private fun PersonalRecordsCard(prs: List<PersonalRecord>) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Personal Records", style = MaterialTheme.typography.titleMedium)
-            prs.forEach { pr ->
-                Text("${pr.label}: ${formatDuration(pr.bestDurationMillis)}", style = MaterialTheme.typography.bodySmall)
+    StrideCard {
+        Text("Personal Records", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        prs.forEach { pr ->
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(pr.label, style = MaterialTheme.typography.bodySmall, color = RunMuted)
+                Text(formatDuration(pr.bestDurationMillis), style = MaterialTheme.typography.bodySmall, color = RunGreen, fontWeight = FontWeight.Bold)
             }
         }
     }
 }
 
 @Composable
-private fun SavedRunsCard(runs: List<RunRecord>, onSelect: (String) -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Saved Runs (${runs.size})", style = MaterialTheme.typography.titleMedium)
-            if (runs.isEmpty()) {
-                Text("No runs yet. Record a run or import a backup.", style = MaterialTheme.typography.bodySmall)
-                return@Column
-            }
-            runs.forEach { r -> SavedRunRow(r, onSelect) }
+private fun SavedRunsSection(runs: List<RunRecord>, targetPace: Int, onSelect: (String) -> Unit) {
+    Text("Saved Runs (${runs.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    if (runs.isEmpty()) {
+        StrideCard { Text("No runs yet. Record a run or import a .backup.", style = MaterialTheme.typography.bodySmall, color = RunMuted) }
+        return
+    }
+    runs.forEach { r -> RunVisualCard(r, targetPace, onSelect) }
+}
+
+@Composable
+private fun RunVisualCard(r: RunRecord, targetPace: Int, onSelect: (String) -> Unit) {
+    val thumb = remember(r.id, r.encodedPolyline) {
+        EncodedPolylineCodec.synthesizeReplayTrack(r.encodedPolyline, r.startTimestampMillis, r.durationMillis, r.splits)
+    }
+    StrideCard(modifier = Modifier.clickable { onSelect(r.id) }) {
+        if (thumb.size >= 2) {
+            SmoothPolylineCanvas(
+                pts = thumb,
+                targetPaceSec = targetPace,
+                strokePx = 6f,
+                modifier = Modifier.fillMaxWidth().height(88.dp).background(Color(0xFF0C0F0D), RoundedCornerShape(10.dp))
+            )
+        }
+        Text(r.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("${"%.2f".format(r.km())} km", style = MaterialTheme.typography.bodySmall, color = RunGreen)
+            Text(formatDuration(r.durationMillis), style = MaterialTheme.typography.bodySmall)
+            Text("${formatPace(r.paceSecondsPerKm)} /km", style = MaterialTheme.typography.bodySmall)
+            Text("${r.caloriesBurned} kcal", style = MaterialTheme.typography.bodySmall, color = RunMuted)
         }
     }
 }
 
 @Composable
-private fun SavedRunRow(r: RunRecord, onSelect: (String) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable { onSelect(r.id) }.padding(vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Column {
-            Text(r.name, style = MaterialTheme.typography.bodyMedium)
-            Text("${"%.2f".format(r.km())} km • ${formatDuration(r.durationMillis)}", style = MaterialTheme.typography.bodySmall)
-        }
-        Text("${formatPace(r.paceSecondsPerKm)} /km", style = MaterialTheme.typography.labelLarge)
-    }
-}
-
-@Composable
-private fun RunDetailCard(
-    run: RunRecord,
-    targetPace: Int,
-    stats: RunAnalyticsEngine,
-    onTrim: (Long) -> Unit,
-    onGpx: () -> Unit
-) {
+private fun RunDetailCard(run: RunRecord, targetPace: Int, stats: RunAnalyticsEngine, onTrim: (Long) -> Unit, onGpx: () -> Unit) {
     val pts = remember(run.id, run.durationMillis, run.trackPoints.size) {
         run.trackPoints.ifEmpty {
             EncodedPolylineCodec.synthesizeReplayTrack(run.encodedPolyline, run.startTimestampMillis, run.durationMillis, run.splits)
         }
     }
     val evals = remember(run.splits, targetPace) { stats.evaluateSplitDiscipline(run.splits, targetPace) }
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            RunHeaderRow(run, onGpx)
-            RunReplayPlayer(points = pts, targetPaceSecPerKm = targetPace)
-            if (evals.isNotEmpty()) SplitDisciplineList(evals, targetPace)
-            TailTrimmerSection(run, onTrim)
-        }
+    StrideCard {
+        RunHeaderRow(run, onGpx)
+        RunReplayPlayer(points = pts, targetPaceSecPerKm = targetPace)
+        if (evals.isNotEmpty()) SplitDisciplineList(evals, targetPace)
+        TailTrimmerSection(run, onTrim)
     }
 }
 
 @Composable
 private fun RunHeaderRow(run: RunRecord, onGpx: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Column {
-            Text(run.name, style = MaterialTheme.typography.titleLarge)
-            Text(
-                "${"%.2f".format(run.km())} km • ${formatDuration(run.durationMillis)} • ${formatPace(run.paceSecondsPerKm)}/km",
-                style = MaterialTheme.typography.bodySmall
-            )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(run.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("${"%.2f".format(run.km())} km • ${formatDuration(run.durationMillis)} • ${formatPace(run.paceSecondsPerKm)}/km", style = MaterialTheme.typography.bodySmall, color = RunMuted)
         }
-        OutlinedButton(onClick = onGpx) { Text("GPX") }
+        OutlinedButton(onClick = onGpx, shape = RoundedCornerShape(999.dp)) { Text("GPX") }
     }
 }
 
 @Composable
 private fun SplitDisciplineList(evals: List<SplitEvaluation>, targetPace: Int) {
-    Text("Split Discipline vs. ${formatPace(targetPace)}/km", style = MaterialTheme.typography.titleSmall)
+    Text("Split Discipline vs. ${formatPace(targetPace)}/km", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
     evals.forEach { ev ->
         val c = when (ev.flag) {
             SplitDisciplineFlag.EARLY_SURGE -> PaceTooFast
@@ -210,7 +254,7 @@ private fun SplitDisciplineList(evals: List<SplitEvaluation>, targetPace: Int) {
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("KM ${ev.split.splitNumber}", style = MaterialTheme.typography.bodySmall)
-            Text("${formatPace(ev.paceSecPerKm)} /km", color = c, style = MaterialTheme.typography.bodySmall)
+            Text("${formatPace(ev.paceSecPerKm)} /km", color = c, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
             Text(ev.flag.name.replace('_', ' '), color = c, style = MaterialTheme.typography.labelSmall)
         }
     }
@@ -220,10 +264,8 @@ private fun SplitDisciplineList(evals: List<SplitEvaluation>, targetPace: Int) {
 private fun TailTrimmerSection(run: RunRecord, onTrim: (Long) -> Unit) {
     var frac by remember(run.id, run.durationMillis) { mutableFloatStateOf(1f) }
     val keep = (run.durationMillis * frac).toLong().coerceAtLeast(10_000L)
-    Text("Post-Run Tail Trimmer", style = MaterialTheme.typography.titleSmall)
-    Text("Keep first ${formatDuration(keep)} of ${formatDuration(run.durationMillis)}", style = MaterialTheme.typography.bodySmall)
+    Text("Post-Run Tail Trimmer", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text("Keep first ${formatDuration(keep)} of ${formatDuration(run.durationMillis)}", style = MaterialTheme.typography.bodySmall, color = RunMuted)
     Slider(value = frac, onValueChange = { frac = it }, valueRange = 0.25f..1f)
-    if (frac < 0.99f) {
-        Button(onClick = { onTrim(keep) }) { Text("Apply Tail Trim") }
-    }
+    if (frac < 0.99f) Button(onClick = { onTrim(keep) }, shape = RoundedCornerShape(999.dp)) { Text("Apply Tail Trim") }
 }

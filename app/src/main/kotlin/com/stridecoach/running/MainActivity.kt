@@ -17,14 +17,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -37,16 +39,21 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.stridecoach.running.core.tracking.RunTrackingService
 import com.stridecoach.running.ui.StrideCoachViewModel
+import com.stridecoach.running.ui.components.StrideGlowBackground
 import com.stridecoach.running.ui.screens.CoachScreen
 import com.stridecoach.running.ui.screens.DataSettingsScreen
 import com.stridecoach.running.ui.screens.HistoryAnalyticsScreen
 import com.stridecoach.running.ui.screens.LiveRunScreen
 import com.stridecoach.running.ui.screens.PlanBuilderScreen
+import com.stridecoach.running.ui.theme.RunGreen
+import com.stridecoach.running.ui.theme.RunMuted
+import com.stridecoach.running.ui.theme.RunNavBg
 import com.stridecoach.running.ui.theme.StrideCoachTheme
 
 class MainActivity : ComponentActivity() {
@@ -119,12 +126,15 @@ private fun AppShell(vm: StrideCoachViewModel) {
     }
 
     val io = rememberIoHooks(vm)
-    Scaffold(
-        snackbarHost = { SnackbarHost(host) },
-        bottomBar = { AppBottomBar(tab) { tab = it } }
-    ) { pad ->
-        Box(modifier = Modifier.padding(pad)) {
-            TabBody(tab, vm, io) { tab = it }
+    StrideGlowBackground {
+        Scaffold(
+            containerColor = Color.Transparent,
+            snackbarHost = { SnackbarHost(host) },
+            bottomBar = { AppBottomBar(tab) { tab = it } }
+        ) { pad ->
+            Box(modifier = Modifier.padding(pad)) {
+                TabBody(tab, vm, io) { tab = it }
+            }
         }
     }
 }
@@ -174,18 +184,25 @@ private fun rememberIoHooks(vm: StrideCoachViewModel): IoHooks {
 private fun AppBottomBar(tab: Int, onPick: (Int) -> Unit) {
     val items = listOf(
         "Coach" to Icons.Default.Home,
-        "Live" to Icons.Default.DirectionsRun,
+        "Live" to Icons.AutoMirrored.Filled.DirectionsRun,
         "Plans" to Icons.Default.CalendarMonth,
         "History" to Icons.Default.History,
         "Data" to Icons.Default.Settings
     )
-    NavigationBar {
+    NavigationBar(containerColor = RunNavBg) {
         items.forEachIndexed { idx, (lbl, icon) ->
             NavigationBarItem(
                 selected = tab == idx,
                 onClick = { onPick(idx) },
                 icon = { Icon(icon, contentDescription = lbl) },
-                label = { Text(lbl) }
+                label = { Text(lbl) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = RunGreen,
+                    selectedTextColor = RunGreen,
+                    indicatorColor = RunGreen.copy(alpha = 0.16f),
+                    unselectedIconColor = RunMuted,
+                    unselectedTextColor = RunMuted
+                )
             )
         }
     }

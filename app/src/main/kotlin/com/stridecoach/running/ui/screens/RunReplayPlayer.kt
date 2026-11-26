@@ -1,6 +1,5 @@
 package com.stridecoach.running.ui.screens
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,16 +22,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.domain.model.TrackPoint
 import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.core.domain.model.formatPace
-import com.stridecoach.running.ui.theme.PaceOnTarget
-import com.stridecoach.running.ui.theme.PaceTooFast
-import com.stridecoach.running.ui.theme.PaceTooSlow
+import com.stridecoach.running.ui.components.SmoothPolylineCanvas
+import com.stridecoach.running.ui.theme.RunMuted
 import kotlinx.coroutines.delay
 
 @Composable
@@ -42,122 +39,72 @@ fun RunReplayPlayer(
     modifier: Modifier = Modifier
 ) {
     if (points.size < 2) {
-        Text("No GPS track available for replay.", style = MaterialTheme.typography.bodySmall)
+        Text("No GPS track available for replay.", style = MaterialTheme.typography.bodySmall, color = RunMuted)
         return
     }
+    val totalMs = points.last().elapsedMillis.coerceAtLeast(1_000L)
+    var playing by remember(points) { mutableStateOf(false) }
+    var mult by remember(points) { mutableIntStateOf(10) }
+    var prog by remember(points) { mutableFloatStateOf(1f) }
 
-    val totalElapsed = points.last().elapsedMillis.coerceAtLeast(1_000L)
-    var isPlaying by remember(points) { mutableStateOf(false) }
-    var speedMultiplier by remember(points) { mutableIntStateOf(10) }
-    var progress by remember(points) { mutableFloatStateOf(0f) }
-
-    LaunchedEffect(isPlaying, speedMultiplier, points) {
-        while (isPlaying) {
+    LaunchedEffect(playing, mult, points) {
+        while (playing) {
             delay(50L)
-            val stepFrac = (50f * speedMultiplier) / totalElapsed.toFloat()
-            val next = progress + stepFrac
+            val next = prog + ((50f * mult) / totalMs.toFloat())
             if (next >= 1f) {
-                progress = 1f
-                isPlaying = false
+                prog = 1f
+                playing = false
             } else {
-                progress = next
+                prog = next
             }
         }
     }
 
-    val currentMillis = (progress * totalElapsed).toLong()
-    val currentIdx = points.indexOfLast { it.elapsedMillis <= currentMillis }.coerceAtLeast(0)
-    val currentPt = points[currentIdx]
-    val currentPace = currentPt.speedMps?.takeIf { it > 0.4f }?.let { (1000f / it).toInt() } ?: 0
+    val curMs = (prog * totalMs).toLong()
+    val idx = points.indexOfLast { it.elapsedMillis <= curMs }.coerceAtLeast(0)
+    val pt = points[idx]
+    val pace = pt.speedMps?.takeIf { it > 0.4f }?.let { (1000f / it).toInt() } ?: 0
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Animated Route Replay", style = MaterialTheme.typography.titleMedium)
-
-        Canvas(
+        Text("Animated Route Replay", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        SmoothPolylineCanvas(
+            pts = points,
+            targetPaceSec = targetPaceSecPerKm,
+            endIdx = idx,
+            strokePx = 9f,
+            showHead = true,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(220.dp)
-                .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
-                .padding(12.dp)
-        ) {
-            val minLat = points.minOf { it.latitude }
-            val maxLat = points.maxOf { it.latitude }
-            val minLon = points.minOf { it.longitude }
-            val maxLon = points.maxOf { it.longitude }
-            val latSpan = (maxLat - minLat).coerceAtLeast(1e-5)
-            val lonSpan = (maxLon - minLon).coerceAtLeast(1e-5)
-
-            fun project(pt: TrackPoint): Offset {
-                val x = ((pt.longitude - minLon) / lonSpan).toFloat() * size.width
-                val y = (1f - ((pt.latitude - minLat) / latSpan).toFloat()) * size.height
-                return Offset(x, y)
-            }
-
-            for (i in 1 until points.size) {
-                val a = points[i - 1]
-                val b = points[i]
-                if (b.isPaused) continue
-                drawLine(
-                    color = Color(0xFF334155),
-                    start = project(a),
-                    end = project(b),
-                    strokeWidth = 5f,
-                    cap = StrokeCap.Round
-                )
-            }
-
-            for (i in 1..currentIdx) {
-                val a = points[i - 1]
-                val b = points[i]
-                if (b.isPaused) continue
-                val paceSec = b.speedMps?.takeIf { it > 0.4f }?.let { (1000f / it).toInt() } ?: targetPaceSecPerKm
-                val color = when {
-                    paceSec < targetPaceSecPerKm - 10 -> PaceTooFast
-                    paceSec > targetPaceSecPerKm + 15 -> PaceTooSlow
-                    else -> PaceOnTarget
-                }
-                drawLine(
-                    color = color,
-                    start = project(a),
-                    end = project(b),
-                    strokeWidth = 9f,
-                    cap = StrokeCap.Round
-                )
-            }
-
-            val head = project(currentPt)
-            drawCircle(color = Color.White, radius = 12f, center = head)
-            drawCircle(color = PaceOnTarget, radius = 7f, center = head)
-        }
-
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatDuration(currentMillis), style = MaterialTheme.typography.labelLarge)
-            Text("%.2f km".format(currentPt.cumulativeDistanceMeters / 1000.0), style = MaterialTheme.typography.labelLarge)
-            Text("${formatPace(currentPace)} /km", style = MaterialTheme.typography.labelLarge)
-        }
-
-        Slider(
-            value = progress,
-            onValueChange = {
-                isPlaying = false
-                progress = it
-            }
+                .height(210.dp)
+                .background(Color(0xFF0C0F0D), RoundedCornerShape(12.dp))
+                .padding(10.dp)
         )
+        ReplayMetricsRow(curMs, pt.cumulativeDistanceMeters, pace)
+        Slider(value = prog, onValueChange = { playing = false; prog = it })
+        ReplayControlsRow(playing, mult, {
+            if (prog >= 0.99f) prog = 0f
+            playing = !playing
+        }, { mult = it })
+    }
+}
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                if (progress >= 0.99f) progress = 0f
-                isPlaying = !isPlaying
-            }) {
-                Text(if (isPlaying) "Pause" else "Play")
-            }
-            listOf(1, 4, 10, 25).forEach { mult ->
-                FilterChip(
-                    selected = speedMultiplier == mult,
-                    onClick = { speedMultiplier = mult },
-                    label = { Text("${mult}x") }
-                )
-            }
+@Composable
+private fun ReplayMetricsRow(ms: Long, distM: Double, pace: Int) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(formatDuration(ms), style = MaterialTheme.typography.labelLarge)
+        Text("%.2f km".format(distM / 1000.0), style = MaterialTheme.typography.labelLarge)
+        Text("${formatPace(pace)} /km", style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+@Composable
+private fun ReplayControlsRow(playing: Boolean, mult: Int, onToggle: () -> Unit, onMult: (Int) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = onToggle, shape = RoundedCornerShape(999.dp)) {
+            Text(if (playing) "Pause" else "Play")
+        }
+        listOf(1, 4, 10, 25).forEach { m ->
+            FilterChip(selected = mult == m, onClick = { onMult(m) }, label = { Text("${m}x") })
         }
     }
 }

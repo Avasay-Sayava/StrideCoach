@@ -5,27 +5,27 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-val PaceOnTarget = Color(0xFF10B981)
+val RunBlack = Color(0xFF080707)
+val RunNavBg = Color(0xFF0F1210)
+val RunCardBg = Color(0xFF161917)
+val RunBorder = Color(0xFF2A2F2C)
+val RunMuted = Color(0xFF8E9A93)
+val RunGreen = Color(0xFF00F15E)
+val PaceOnTarget = Color(0xFF00F15E)
 val PaceTooFast = Color(0xFFF59E0B)
 val PaceTooSlow = Color(0xFFEF4444)
 val WalkLoadAccent = Color(0xFF38BDF8)
 
-private val StrideDarkColors = darkColorScheme(
-    primary = Color(0xFF34D399),
-    onPrimary = Color(0xFF06281E),
-    secondary = Color(0xFF38BDF8),
-    tertiary = Color(0xFFF59E0B),
-    background = Color(0xFF0B1120),
-    surface = Color(0xFF111827),
-    surfaceVariant = Color(0xFF1F2937),
-    onBackground = Color(0xFFF8FAFC),
-    onSurface = Color(0xFFF1F5F9)
+private val DarkPalette = darkColorScheme(
+    primary = RunGreen, onPrimary = Color(0xFF04210E),
+    secondary = WalkLoadAccent, onSecondary = Color(0xFF031D2B),
+    tertiary = PaceTooFast, background = RunBlack,
+    surface = RunCardBg, surfaceVariant = Color(0xFF202522),
+    onBackground = Color(0xFFFAFAFA), onSurface = Color(0xFFFAFAFA),
+    onSurfaceVariant = RunMuted, outline = RunBorder
 )
 
 @Composable
 fun StrideCoachTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = StrideDarkColors,
-        content = content
-    )
+    MaterialTheme(colorScheme = DarkPalette, content = content)
 }

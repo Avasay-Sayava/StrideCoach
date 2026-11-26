@@ -9,20 +9,27 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.domain.engine.PlanPresets
 import com.stridecoach.running.core.domain.model.DayRole
@@ -36,6 +43,12 @@ import com.stridecoach.running.core.domain.model.TrainingPlanConfig
 import com.stridecoach.running.core.domain.model.WalkingLoadRule
 import com.stridecoach.running.core.domain.model.WorkoutSegment
 import com.stridecoach.running.ui.CoachUiState
+import com.stridecoach.running.ui.components.StatusPill
+import com.stridecoach.running.ui.components.StrideCard
+import com.stridecoach.running.ui.theme.PaceTooFast
+import com.stridecoach.running.ui.theme.RunGreen
+import com.stridecoach.running.ui.theme.RunMuted
+import com.stridecoach.running.ui.theme.WalkLoadAccent
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.util.UUID
@@ -48,15 +61,94 @@ fun PlanBuilderScreen(
     onSaveTemplate: (StructuredWorkout) -> Unit,
     onStartWorkout: (StructuredWorkout) -> Unit
 ) {
+    var subTab by remember { mutableIntStateOf(0) }
     val scroll = rememberScrollState()
+    val labels = listOf("Schedule", "Plan Builder", "Workouts")
+
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        PlanCreatorCard(onActivatePlan)
-        BenchmarkCard(onRecalibrate5k)
-        WorkoutBuilderCard(state.activePlan?.targetPaceSecPerKm ?: 295, state.templates, onSaveTemplate, onStartWorkout)
-        SchedulePreviewCard(state.plannedDays)
+        Text("Training Plans", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            labels.forEachIndexed { idx, lbl ->
+                SegmentedButton(
+                    selected = subTab == idx,
+                    onClick = { subTab = idx },
+                    shape = SegmentedButtonDefaults.itemShape(idx, labels.size),
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = RunGreen.copy(alpha = 0.20f),
+                        activeContentColor = RunGreen
+                    )
+                ) { Text(lbl) }
+            }
+        }
+        when (subTab) {
+            0 -> ScheduleList(state.activePlan?.name, state.plannedDays, onStartWorkout)
+            1 -> {
+                PlanCreatorCard(onActivatePlan)
+                BenchmarkCard(onRecalibrate5k)
+            }
+            2 -> WorkoutBuilderCard(state.activePlan?.targetPaceSecPerKm ?: 295, state.templates, onSaveTemplate, onStartWorkout)
+        }
+    }
+}
+
+@Composable
+private fun ScheduleList(planName: String?, days: List<PlannedDay>, onRun: (StructuredWorkout) -> Unit) {
+    if (days.isEmpty()) {
+        StrideCard { Text("No plan active. Open Plan Builder to generate one.", color = RunMuted) }
+        return
+    }
+    StrideCard {
+        Text(planName ?: "Active Schedule", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("${days.size} scheduled days • Showing upcoming weeks", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+    }
+    val byWeek = days.groupBy { it.weekNumber }.entries.take(6)
+    byWeek.forEach { (wk, list) -> WeekCard(wk, list, onRun) }
+}
+
+@Composable
+private fun WeekCard(wk: Int, days: List<PlannedDay>, onRun: (StructuredWorkout) -> Unit) {
+    val first = days.firstOrNull()
+    val tag = when {
+        first?.isTaperWeek == true -> "Taper"
+        first?.isCutbackWeek == true -> "Cutback"
+        else -> "Build"
+    }
+    StrideCard {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Week $wk", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StatusPill(tag, if (tag == "Build") RunGreen else WalkLoadAccent)
+        }
+        days.forEach { d -> DayRow(d, onRun) }
+    }
+}
+
+@Composable
+private fun DayRow(d: PlannedDay, onRun: (StructuredWorkout) -> Unit) {
+    val dt = LocalDate.ofEpochDay(d.dateEpochDay)
+    val c = when (d.dayRole) {
+        DayRole.LONG_RUN, DayRole.RACE_DAY -> RunGreen
+        DayRole.FAST_WORKOUT -> PaceTooFast
+        DayRole.EASY_RUN -> WalkLoadAccent
+        else -> RunMuted
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("${dt.dayOfWeek.name.take(3)} $dt", style = MaterialTheme.typography.labelSmall, color = RunMuted)
+            Text(d.workout?.title ?: d.dayRole.label, style = MaterialTheme.typography.bodyMedium)
+        }
+        val w = d.workout
+        if (w != null && d.dayRole != DayRole.WALK_ONLY) {
+            OutlinedButton(onClick = { onRun(w) }, shape = RoundedCornerShape(999.dp)) { Text("Run") }
+        } else {
+            StatusPill(d.dayRole.label, c)
+        }
     }
 }
 
@@ -71,32 +163,31 @@ private fun PlanCreatorCard(onActivate: (TrainingPlanConfig) -> Unit) {
     var walkCap by remember { mutableStateOf("7") }
     var roles by remember { mutableStateOf(defaultWeekRoles()) }
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Reusable Training Plan Builder", style = MaterialTheme.typography.titleLarge)
-            OutlinedTextField(name, { name = it }, label = { Text("Plan Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            GoalChipsRow(goal) { goal = it }
-            TwoFieldRow("Weeks", weeks, { weeks = it }, "Goal sec/km", pace) { pace = it }
-            ThreeFieldRow("Start Long km", startKm, { startKm = it }, "Peak Long km", peakKm, { peakKm = it }, "Walk Cap km", walkCap) { walkCap = it }
-            Text("Weekly Day Roles (tap to cycle)", style = MaterialTheme.typography.labelLarge)
-            WeekdayRoleChips(roles) { roles = it }
-            PlanActionButtons(
-                onCreate = {
-                    val cfg = buildCustomConfig(name, goal, weeks, pace, startKm, peakKm, walkCap, roles)
-                    onActivate(cfg)
-                },
-                onPreset = { onActivate(PlanPresets.telAviv10kPreset()) }
-            )
-        }
+    StrideCard {
+        Text("Reusable Training Plan Builder", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        OutlinedTextField(name, { name = it }, label = { Text("Plan Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        GoalChipsRow(goal) { goal = it }
+        TwoFieldRow("Weeks", weeks, { weeks = it }, "Goal sec/km", pace) { pace = it }
+        ThreeFieldRow("Start km", startKm, { startKm = it }, "Peak km", peakKm, { peakKm = it }, "Walk km", walkCap) { walkCap = it }
+        Text("Weekly Day Roles (tap to cycle)", style = MaterialTheme.typography.labelLarge, color = RunMuted)
+        WeekdayRoleChips(roles) { roles = it }
+        PlanActionButtons(
+            onCreate = { onActivate(buildCustomConfig(name, goal, weeks, pace, startKm, peakKm, walkCap, roles)) },
+            onPreset = { onActivate(PlanPresets.telAviv10kPreset()) }
+        )
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun GoalChipsRow(selected: GoalDistance, onSelect: (GoalDistance) -> Unit) {
+private fun GoalChipsRow(sel: GoalDistance, onPick: (GoalDistance) -> Unit) {
+    val cc = FilterChipDefaults.filterChipColors(
+        selectedContainerColor = RunGreen.copy(alpha = 0.20f),
+        selectedLabelColor = RunGreen
+    )
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         GoalDistance.entries.forEach { d ->
-            FilterChip(selected = selected == d, onClick = { onSelect(d) }, label = { Text(d.label) })
+            FilterChip(selected = sel == d, onClick = { onPick(d) }, colors = cc, label = { Text(d.label) })
         }
     }
 }
@@ -105,16 +196,18 @@ private fun GoalChipsRow(selected: GoalDistance, onSelect: (GoalDistance) -> Uni
 @Composable
 private fun WeekdayRoleChips(roles: Map<DayOfWeek, DayRole>, onChange: (Map<DayOfWeek, DayRole>) -> Unit) {
     val cycle = listOf(DayRole.LONG_RUN, DayRole.FAST_WORKOUT, DayRole.EASY_RUN, DayRole.FULL_REST, DayRole.WALK_ONLY, DayRole.CROSS_TRAIN)
+    val cc = FilterChipDefaults.filterChipColors(
+        selectedContainerColor = RunGreen.copy(alpha = 0.20f),
+        selectedLabelColor = RunGreen
+    )
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         DayOfWeek.entries.forEach { dow ->
-            val role = roles[dow] ?: DayRole.FULL_REST
+            val r = roles[dow] ?: DayRole.FULL_REST
             FilterChip(
-                selected = role != DayRole.FULL_REST,
-                onClick = {
-                    val next = cycle[(cycle.indexOf(role) + 1) % cycle.size]
-                    onChange(roles + (dow to next))
-                },
-                label = { Text("${dow.name.take(3)}: ${role.label}") }
+                selected = r != DayRole.FULL_REST,
+                onClick = { onChange(roles + (dow to cycle[(cycle.indexOf(r) + 1) % cycle.size])) },
+                colors = cc,
+                label = { Text("${dow.name.take(3)}: ${r.label}") }
             )
         }
     }
@@ -123,24 +216,22 @@ private fun WeekdayRoleChips(roles: Map<DayOfWeek, DayRole>, onChange: (Map<DayO
 @Composable
 private fun PlanActionButtons(onCreate: () -> Unit, onPreset: () -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = onCreate) { Text("Generate Plan") }
-        OutlinedButton(onClick = onPreset) { Text("Load 10K Preset") }
+        Button(onClick = onCreate, shape = RoundedCornerShape(999.dp)) { Text("Generate Plan") }
+        OutlinedButton(onClick = onPreset, shape = RoundedCornerShape(999.dp)) { Text("10K Preset") }
     }
 }
 
 @Composable
 private fun BenchmarkCard(onRecalibrate: (Long) -> Unit) {
     var mins by remember { mutableStateOf("23.5") }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("5K Benchmark Auto-Recalibration", style = MaterialTheme.typography.titleMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(mins, { mins = it }, label = { Text("5K time (min)") }, modifier = Modifier.weight(1f), singleLine = true)
-                Button(onClick = {
-                    val v = mins.toDoubleOrNull() ?: return@Button
-                    if (v > 12.0) onRecalibrate((v * 60_000.0).toLong())
-                }) { Text("Recalibrate") }
-            }
+    StrideCard {
+        Text("5K Benchmark Auto-Recalibration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(mins, { mins = it }, label = { Text("5K time (min)") }, modifier = Modifier.weight(1f), singleLine = true)
+            Button(shape = RoundedCornerShape(999.dp), onClick = {
+                val v = mins.toDoubleOrNull() ?: return@Button
+                if (v > 12.0) onRecalibrate((v * 60_000.0).toLong())
+            }) { Text("Recalibrate") }
         }
     }
 }
@@ -157,51 +248,27 @@ private fun WorkoutBuilderCard(
     var workM by remember { mutableStateOf("1000") }
     var restS by remember { mutableStateOf("120") }
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Custom Structured Workout Builder", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(title, { title = it }, label = { Text("Workout Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            ThreeFieldRow("Reps", reps, { reps = it }, "Work (m)", workM, { workM = it }, "Rest (s)", restS) { restS = it }
-            Button(onClick = { onSave(buildIntervalTemplate(title, reps, workM, restS, paceSec)) }) {
-                Text("Save Workout Template")
-            }
-            templates.forEach { tpl -> TemplateRow(tpl, onRun) }
-        }
+    StrideCard {
+        Text("Custom Structured Workout Builder", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        OutlinedTextField(title, { title = it }, label = { Text("Workout Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        ThreeFieldRow("Reps", reps, { reps = it }, "Work (m)", workM, { workM = it }, "Rest (s)", restS) { restS = it }
+        Button(shape = RoundedCornerShape(999.dp), onClick = {
+            onSave(buildIntervalTemplate(title, reps, workM, restS, paceSec))
+        }) { Text("Save Workout Template") }
+        templates.forEach { tpl -> TemplateRow(tpl, onRun) }
     }
 }
 
 @Composable
 private fun TemplateRow(tpl: StructuredWorkout, onRun: (StructuredWorkout) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(tpl.title, style = MaterialTheme.typography.bodyMedium)
-        OutlinedButton(onClick = { onRun(tpl) }) { Text("Run") }
+        OutlinedButton(onClick = { onRun(tpl) }, shape = RoundedCornerShape(999.dp)) { Text("Run") }
     }
 }
 
 @Composable
-private fun SchedulePreviewCard(days: List<PlannedDay>) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Active Schedule (${days.size} days)", style = MaterialTheme.typography.titleMedium)
-            days.take(21).forEach { d ->
-                val tag = when {
-                    d.isBenchmarkDay -> " [5K TEST]"
-                    d.isTaperWeek -> " [TAPER]"
-                    d.isCutbackWeek -> " [CUTBACK]"
-                    else -> ""
-                }
-                val dt = LocalDate.ofEpochDay(d.dateEpochDay)
-                Text("W${d.weekNumber} $dt • ${d.workout?.title ?: d.dayRole.label}$tag", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-@Composable
-private fun TwoFieldRow(
-    l1: String, v1: String, c1: (String) -> Unit,
-    l2: String, v2: String, c2: (String) -> Unit
-) {
+private fun TwoFieldRow(l1: String, v1: String, c1: (String) -> Unit, l2: String, v2: String, c2: (String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(v1, c1, label = { Text(l1) }, modifier = Modifier.weight(1f), singleLine = true)
         OutlinedTextField(v2, c2, label = { Text(l2) }, modifier = Modifier.weight(1f), singleLine = true)
@@ -209,11 +276,7 @@ private fun TwoFieldRow(
 }
 
 @Composable
-private fun ThreeFieldRow(
-    l1: String, v1: String, c1: (String) -> Unit,
-    l2: String, v2: String, c2: (String) -> Unit,
-    l3: String, v3: String, c3: (String) -> Unit
-) {
+private fun ThreeFieldRow(l1: String, v1: String, c1: (String) -> Unit, l2: String, v2: String, c2: (String) -> Unit, l3: String, v3: String, c3: (String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(v1, c1, label = { Text(l1) }, modifier = Modifier.weight(1f), singleLine = true)
         OutlinedTextField(v2, c2, label = { Text(l2) }, modifier = Modifier.weight(1f), singleLine = true)
@@ -232,20 +295,13 @@ private fun defaultWeekRoles(): Map<DayOfWeek, DayRole> = mapOf(
 )
 
 private fun buildCustomConfig(
-    name: String,
-    goal: GoalDistance,
-    weeksRaw: String,
-    paceRaw: String,
-    startRaw: String,
-    peakRaw: String,
-    capRaw: String,
-    roles: Map<DayOfWeek, DayRole>
+    name: String, goal: GoalDistance, wRaw: String, pRaw: String, sRaw: String, pkRaw: String, cRaw: String, roles: Map<DayOfWeek, DayRole>
 ): TrainingPlanConfig {
-    val w = (weeksRaw.toIntOrNull() ?: 12).coerceIn(2, 52)
-    val p = (paceRaw.toIntOrNull() ?: 295).coerceIn(180, 540)
-    val s = (startRaw.toIntOrNull() ?: 8).coerceIn(3, 30)
-    val pk = (peakRaw.toIntOrNull() ?: 15).coerceAtLeast(s)
-    val cap = (capRaw.toIntOrNull() ?: 7).coerceAtLeast(2)
+    val w = (wRaw.toIntOrNull() ?: 12).coerceIn(2, 52)
+    val p = (pRaw.toIntOrNull() ?: 295).coerceIn(180, 540)
+    val s = (sRaw.toIntOrNull() ?: 8).coerceIn(3, 30)
+    val pk = (pkRaw.toIntOrNull() ?: 15).coerceAtLeast(s)
+    val cap = (cRaw.toIntOrNull() ?: 7).coerceAtLeast(2)
     val d0 = LocalDate.now().toEpochDay()
     return TrainingPlanConfig(
         id = "plan_${UUID.randomUUID()}",
@@ -262,16 +318,10 @@ private fun buildCustomConfig(
     )
 }
 
-private fun buildIntervalTemplate(
-    title: String,
-    repsRaw: String,
-    workRaw: String,
-    restRaw: String,
-    pace: Int
-): StructuredWorkout {
-    val r = (repsRaw.toIntOrNull() ?: 4).coerceIn(1, 30)
-    val wm = (workRaw.toIntOrNull() ?: 1_000).coerceIn(100, 10_000)
-    val rs = (restRaw.toIntOrNull() ?: 120).coerceIn(15, 600)
+private fun buildIntervalTemplate(title: String, rRaw: String, wRaw: String, rsRaw: String, pace: Int): StructuredWorkout {
+    val r = (rRaw.toIntOrNull() ?: 4).coerceIn(1, 30)
+    val wm = (wRaw.toIntOrNull() ?: 1_000).coerceIn(100, 10_000)
+    val rs = (rsRaw.toIntOrNull() ?: 120).coerceIn(15, 600)
     return StructuredWorkout(
         id = "tpl_${UUID.randomUUID()}",
         title = title.ifBlank { "${r}x${wm}m" },
