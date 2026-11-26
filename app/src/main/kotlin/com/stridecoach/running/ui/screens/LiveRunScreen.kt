@@ -82,9 +82,11 @@ private fun ActiveStepBanner(st: LiveTrackingState) {
         PaceStatus.TOO_SLOW -> PaceTooSlow
         PaceStatus.NO_SIGNAL -> MaterialTheme.colorScheme.surfaceVariant
     }
+    val remM = snap?.stepRemainingMeters
+    val remS = snap?.stepRemainingSeconds
     val rem = when {
-        snap?.stepRemainingMeters != null -> "${snap.stepRemainingMeters} m left"
-        snap?.stepRemainingSeconds != null -> "${formatDuration(snap.stepRemainingSeconds * 1000L)} left"
+        remM != null -> "$remM m left"
+        remS != null -> "${formatDuration(remS * 1000L)} left"
         else -> "Open segment"
     }
     Box(

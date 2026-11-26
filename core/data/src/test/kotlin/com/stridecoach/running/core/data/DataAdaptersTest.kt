@@ -53,7 +53,8 @@ class DataAdaptersTest {
         val out = ad.exportBackup(list, 1795714644919L)
         val back = ad.importBackup(out)
         assertEquals(2, back.size)
-        assertEquals(10168, back.first().distanceMeters)
+        assertEquals(2000, back[0].distanceMeters)
+        assertEquals(10168, back[1].distanceMeters)
     }
 
     @Test
