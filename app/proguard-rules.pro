@@ -1,0 +1,5 @@
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keep class com.stridecoach.running.core.domain.model.** { *; }
+-keep class com.stridecoach.running.core.data.adapter.** { *; }
+-keep class com.stridecoach.running.core.data.db.** { *; }
+-dontwarn kotlinx.serialization.**

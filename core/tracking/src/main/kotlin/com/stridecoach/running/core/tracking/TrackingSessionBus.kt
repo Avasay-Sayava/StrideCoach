@@ -1,0 +1,63 @@
+package com.stridecoach.running.core.tracking
+
+import com.stridecoach.running.core.domain.engine.LiveWorkoutSnapshot
+import com.stridecoach.running.core.domain.model.PaceStatus
+import com.stridecoach.running.core.domain.model.RunRecord
+import com.stridecoach.running.core.domain.model.StructuredWorkout
+import com.stridecoach.running.core.domain.model.TrackPoint
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+data class LiveTrackingState(
+    val isActive: Boolean = false,
+    val isPaused: Boolean = false,
+    val movementState: MovementState = MovementState.MOVING,
+    val workout: StructuredWorkout? = null,
+    val planDayId: String? = null,
+    val snapshot: LiveWorkoutSnapshot? = null,
+    val trackPoints: List<TrackPoint> = emptyList(),
+    val lastCueMessage: String? = null
+) {
+    val currentPaceStatus: PaceStatus
+        get() = snapshot?.paceStatus ?: PaceStatus.NO_SIGNAL
+}
+
+object TrackingSessionBus {
+    private val st = MutableStateFlow(LiveTrackingState())
+    val state: StateFlow<LiveTrackingState> = st.asStateFlow()
+
+    private val done = MutableSharedFlow<RunRecord>(extraBufferCapacity = 4)
+    val completedRuns: SharedFlow<RunRecord> = done.asSharedFlow()
+
+    @Volatile
+    var pendingWorkout: StructuredWorkout? = null
+    @Volatile
+    var pendingPlanDayId: String? = null
+    @Volatile
+    var voiceEnabled: Boolean = true
+    @Volatile
+    var hapticEnabled: Boolean = true
+    @Volatile
+    var autoPauseEnabled: Boolean = true
+
+    internal fun update(fn: (LiveTrackingState) -> LiveTrackingState) {
+        val cur = st.value
+        val nxt = fn(cur)
+        if (nxt != cur) st.value = nxt
+    }
+
+    internal fun emitCompletedRun(r: RunRecord) {
+        done.tryEmit(r)
+    }
+
+    fun isLive(): Boolean = st.value.isActive
+    fun isPaused(): Boolean = st.value.isPaused
+    fun pts(): List<TrackPoint> = st.value.trackPoints
+    fun reset() {
+        st.value = LiveTrackingState()
+    }
+}
