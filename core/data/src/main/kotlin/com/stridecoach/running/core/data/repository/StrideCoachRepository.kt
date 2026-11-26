@@ -1,5 +1,6 @@
 package com.stridecoach.running.core.data.repository
 
+import com.stridecoach.running.core.data.db.DetectedSegmentEntity
 import com.stridecoach.running.core.data.db.FullRunBundle
 import com.stridecoach.running.core.data.db.PlannedDayEntity
 import com.stridecoach.running.core.data.db.RunEntity
@@ -21,35 +22,50 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlin.math.abs
 
 class StrideCoachRepository(
     private val db: RunningDatabase,
     private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 ) {
-    fun observeRuns(): Flow<List<RunRecord>> = db.runDao().observeRuns().map { list ->
-        list.map { it.toDomain(emptyList(), emptyList()) }
+    fun observeRuns(): Flow<List<RunRecord>> = db.runDao().observeRunsWithSplits().map { list ->
+        list.map { row ->
+            val sp = row.splits.sortedBy { it.splitNumber }.map { it.toDomain() }
+            row.run.toDomain(sp, emptyList())
+        }
     }
 
     suspend fun getRunDetail(id: String): RunRecord? {
         val run = db.runDao().getRun(id) ?: return null
         val sp = db.runDao().getSplits(id).map { it.toDomain() }
         val pts = db.runDao().getTrackPoints(id).map { it.toDomain() }
-        return run.toDomain(sp, pts)
+        val segs = db.runDao().getDetectedSegments(id).map { it.toDomain() }
+        return run.toDomain(sp, pts, segs)
     }
 
-    suspend fun getAllRunsWithSplits(): List<RunRecord> = db.runDao().getAllRuns().map { r ->
-        val sp = db.runDao().getSplits(r.id).map { it.toDomain() }
-        r.toDomain(sp, emptyList())
+    suspend fun getAllRunsWithSplits(): List<RunRecord> = db.runDao().getAllRunsWithSplits().map { row ->
+        val sp = row.splits.sortedBy { it.splitNumber }.map { it.toDomain() }
+        row.run.toDomain(sp, emptyList())
     }
 
     suspend fun saveRun(run: RunRecord) {
-        val bundle = run.toBundle()
-        db.runDao().replaceRunFull(bundle.run, bundle.splits, bundle.points)
+        db.runDao().replaceRunFull(run.toBundle())
     }
 
     suspend fun saveRuns(runs: List<RunRecord>) {
         if (runs.isEmpty()) return
         db.runDao().replaceRunsBatch(runs.map { it.toBundle() })
+    }
+
+    suspend fun saveRunsDeduplicated(incoming: List<RunRecord>): Int {
+        if (incoming.isEmpty()) return 0
+        val existing = db.runDao().getAllRunsWithSplits().map { it.run.startTimestampMillis }
+        val windowMs = 5 * 60_000L
+        val fresh = incoming.filter { rec ->
+            existing.none { ts -> abs(ts - rec.startTimestampMillis) <= windowMs }
+        }
+        if (fresh.isNotEmpty()) saveRuns(fresh)
+        return fresh.size
     }
 
     suspend fun deleteRun(id: String) = db.runDao().deleteRun(id)
@@ -64,6 +80,18 @@ class StrideCoachRepository(
             WalkLogEntity(it.dateEpochDay, it.distanceMeters, it.source.name, it.stepCount, it.updatedAtMillis)
         }
         db.walkDao().upsertAll(list)
+    }
+
+    suspend fun mergeWalkLogs(incoming: List<WalkLog>) {
+        if (incoming.isEmpty()) return
+        val curMap = db.walkDao().getAll().associateBy { it.dateEpochDay }
+        val merged = incoming.map { w ->
+            val prev = curMap[w.dateEpochDay]
+            val dist = if (prev != null) maxOf(prev.distanceMeters, w.distanceMeters) else w.distanceMeters
+            val steps = if (prev != null) maxOf(prev.stepCount, w.stepCount) else w.stepCount
+            WalkLogEntity(w.dateEpochDay, dist, w.source.name, steps, w.updatedAtMillis)
+        }
+        db.walkDao().upsertAll(merged)
     }
 
     fun observeActivePlan(): Flow<TrainingPlanConfig?> = db.planDao().observeActivePlan().map { row ->
@@ -94,19 +122,23 @@ class StrideCoachRepository(
     private fun RunRecord.toBundle(): FullRunBundle {
         val r = RunEntity(
             id, startTimestampMillis, distanceMeters, durationMillis, paceSecondsPerKm,
-            caloriesBurned, name, description, encodedPolyline, workoutId, planDayId, source.name
+            caloriesBurned, name, description, encodedPolyline, workoutId, planDayId,
+            source.name, totalSteps, avgCadenceSpm, elevGainM
         )
         val sp = splits.map {
-            RunSplitEntity(0L, id, it.splitNumber, it.distanceMeters, it.durationMillis, it.targetPaceMinSec, it.targetPaceMaxSec)
+            RunSplitEntity(0L, id, it.splitNumber, it.distanceMeters, it.durationMillis, it.targetPaceMinSec, it.targetPaceMaxSec, it.avgCadenceSpm, it.elevDeltaM)
         }
         val pts = trackPoints.map { pt ->
             TrackPointEntity(
                 0L, id, pt.seqIndex, pt.timestampMillis, pt.elapsedMillis, pt.latitude, pt.longitude,
                 pt.altitudeMeters, pt.accuracyMeters, pt.speedMps, pt.bearingDegrees,
-                pt.cumulativeDistanceMeters, pt.segmentIndex, pt.isPaused
+                pt.cumulativeDistanceMeters, pt.segmentIndex, pt.isPaused, pt.cadenceSpm
             )
         }
-        return FullRunBundle(r, sp, pts)
+        val segList = segs.map { sg ->
+            DetectedSegmentEntity(0L, id, sg.type.name, sg.startMs, sg.endMs, sg.distM, sg.steps, sg.paceSec)
+        }
+        return FullRunBundle(r, sp, pts, segList)
     }
 
     private fun PlannedDayEntity.toDomain(codec: Json) = PlannedDay(

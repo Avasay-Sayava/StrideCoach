@@ -62,7 +62,9 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.osmdroid.android)
+    implementation(libs.maplibre.android)
+    implementation(libs.androidx.health.connect)
+    implementation(libs.androidx.work.runtime)
 
     testImplementation(libs.junit)
 }

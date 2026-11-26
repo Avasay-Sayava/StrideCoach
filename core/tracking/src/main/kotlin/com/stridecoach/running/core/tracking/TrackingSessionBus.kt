@@ -1,6 +1,7 @@
 package com.stridecoach.running.core.tracking
 
 import com.stridecoach.running.core.domain.engine.LiveWorkoutSnapshot
+import com.stridecoach.running.core.domain.model.ActivitySegmentType
 import com.stridecoach.running.core.domain.model.PaceStatus
 import com.stridecoach.running.core.domain.model.RunRecord
 import com.stridecoach.running.core.domain.model.StructuredWorkout
@@ -20,7 +21,12 @@ data class LiveTrackingState(
     val planDayId: String? = null,
     val snapshot: LiveWorkoutSnapshot? = null,
     val trackPoints: List<TrackPoint> = emptyList(),
-    val lastCueMessage: String? = null
+    val lastCueMessage: String? = null,
+    val steps: Int = 0,
+    val cadenceSpm: Int = 0,
+    val actType: ActivitySegmentType = ActivitySegmentType.RUNNING,
+    val gpsAccM: Float? = null,
+    val elevM: Int = 0
 ) {
     val currentPaceStatus: PaceStatus
         get() = snapshot?.paceStatus ?: PaceStatus.NO_SIGNAL
@@ -45,12 +51,12 @@ object TrackingSessionBus {
     var autoPauseEnabled: Boolean = true
 
     internal fun update(fn: (LiveTrackingState) -> LiveTrackingState) {
-        val cur = st.value
-        val nxt = fn(cur)
-        if (nxt != cur) st.value = nxt
+        val c = st.value
+        val n = fn(c)
+        if (n != c) st.value = n
     }
 
-    internal fun emitCompletedRun(r: RunRecord) {
+    internal fun emitRun(r: RunRecord) {
         done.tryEmit(r)
     }
 

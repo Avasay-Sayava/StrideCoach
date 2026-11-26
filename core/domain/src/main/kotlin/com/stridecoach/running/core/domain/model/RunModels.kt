@@ -5,8 +5,26 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class RunSource {
     RECORDED,
-    BACKUP_IMPORT
+    BACKUP_IMPORT,
+    HEALTH_CONNECT
 }
+
+@Serializable
+enum class ActivitySegmentType {
+    RUNNING,
+    WALKING,
+    STRETCH_REST
+}
+
+@Serializable
+data class DetectedSegment(
+    val type: ActivitySegmentType,
+    val startMs: Long,
+    val endMs: Long,
+    val distM: Int,
+    val steps: Int,
+    val paceSec: Int
+)
 
 @Serializable
 data class TrackPoint(
@@ -21,7 +39,8 @@ data class TrackPoint(
     val bearingDegrees: Float? = null,
     val cumulativeDistanceMeters: Double = 0.0,
     val segmentIndex: Int? = null,
-    val isPaused: Boolean = false
+    val isPaused: Boolean = false,
+    val cadenceSpm: Int? = null
 )
 
 @Serializable
@@ -30,7 +49,9 @@ data class RunSplit(
     val distanceMeters: Int,
     val durationMillis: Long,
     val targetPaceMinSec: Int? = null,
-    val targetPaceMaxSec: Int? = null
+    val targetPaceMaxSec: Int? = null,
+    val avgCadenceSpm: Int = 0,
+    val elevDeltaM: Int = 0
 ) {
     fun paceSecPerKm(): Int {
         val d = distanceMeters
@@ -55,7 +76,11 @@ data class RunRecord(
     val trackPoints: List<TrackPoint> = emptyList(),
     val workoutId: String? = null,
     val planDayId: String? = null,
-    val source: RunSource = RunSource.RECORDED
+    val source: RunSource = RunSource.RECORDED,
+    val totalSteps: Int = 0,
+    val avgCadenceSpm: Int = 0,
+    val elevGainM: Int = 0,
+    val segs: List<DetectedSegment> = emptyList()
 ) {
     fun km(): Double = distanceMeters / 1000.0
     fun hasTrack(): Boolean = trackPoints.size >= 2 || encodedPolyline.isNotBlank()
@@ -65,7 +90,8 @@ data class RunRecord(
 enum class WalkSource {
     STEP_SENSOR,
     TIMELINE_IMPORT,
-    MANUAL
+    MANUAL,
+    HEALTH_CONNECT
 }
 
 @Serializable

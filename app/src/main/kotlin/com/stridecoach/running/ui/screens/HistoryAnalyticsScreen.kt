@@ -11,269 +11,350 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.stridecoach.running.core.domain.engine.EncodedPolylineCodec
+import com.stridecoach.running.core.domain.engine.DailyLoadBar
+import com.stridecoach.running.core.domain.engine.PaceZoneBucket
 import com.stridecoach.running.core.domain.engine.PersonalRecord
-import com.stridecoach.running.core.domain.engine.RunAnalyticsEngine
-import com.stridecoach.running.core.domain.engine.SplitDisciplineFlag
-import com.stridecoach.running.core.domain.engine.SplitEvaluation
 import com.stridecoach.running.core.domain.engine.WeeklyLoadPoint
 import com.stridecoach.running.core.domain.model.RunRecord
 import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.core.domain.model.formatPace
 import com.stridecoach.running.ui.CoachUiState
-import com.stridecoach.running.ui.components.KpiStatTile
-import com.stridecoach.running.ui.components.OsmRouteMap
+import com.stridecoach.running.ui.TelemetrySummary
+import com.stridecoach.running.ui.components.StaticRouteMapThumbnail
+import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.StrideCard
+import com.stridecoach.running.ui.components.TelemetryStatStrip
+import com.stridecoach.running.ui.theme.KdeBg
 import com.stridecoach.running.ui.theme.KdeMuted
 import com.stridecoach.running.ui.theme.KdePurple
 import com.stridecoach.running.ui.theme.KdeSky
-import com.stridecoach.running.ui.theme.PaceOnTarget
-import com.stridecoach.running.ui.theme.PaceTooFast
-import com.stridecoach.running.ui.theme.PaceTooSlow
-import java.time.DayOfWeek
+import com.stridecoach.running.ui.theme.KdeText
+import com.stridecoach.running.ui.theme.TabularNumberStyle
+import com.stridecoach.running.ui.theme.paceZoneColor
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @Composable
 fun HistoryAnalyticsScreen(
     state: CoachUiState,
-    selectedRun: RunRecord?,
     onSelectRun: (String) -> Unit,
-    onTrimTail: (Long) -> Unit,
-    onExportGpx: () -> Unit
+    analyticsScrollState: LazyListState = rememberLazyListState(),
+    historyScrollState: LazyListState = rememberLazyListState()
 ) {
-    val stats = remember { RunAnalyticsEngine() }
-    val pace = state.activePlan?.targetPaceSecPerKm ?: 295
+    var subTab by rememberSaveable { mutableIntStateOf(0) }
 
+    Column(modifier = Modifier.fillMaxSize()) {
+        StyleCHeader(subTab, state.runs.size) { subTab = it }
+        if (subTab == 0) {
+            AnalyticsFeed(state, analyticsScrollState, onSelectRun)
+        } else {
+            HistoryFeed(state.runs, historyScrollState, onSelectRun)
+        }
+    }
+}
+
+@Composable
+private fun StyleCHeader(subTab: Int, runCount: Int, onPick: (Int) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().background(KdeBg).padding(top = 14.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Telemetry", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            StatusPill("$runCount runs", KdePurple)
+        }
+        val tabs = listOf("Analytics", "History")
+        TabRow(
+            selectedTabIndex = subTab,
+            containerColor = KdeBg,
+            contentColor = KdePurple,
+            indicator = { pos ->
+                TabRowDefaults.SecondaryIndicator(
+                    modifier = Modifier.tabIndicatorOffset(pos[subTab]),
+                    color = KdePurple
+                )
+            }
+        ) {
+            tabs.forEachIndexed { idx, title ->
+                Tab(
+                    selected = subTab == idx,
+                    onClick = { onPick(idx) },
+                    text = {
+                        Text(
+                            title,
+                            fontWeight = if (subTab == idx) FontWeight.Bold else FontWeight.Medium,
+                            color = if (subTab == idx) KdeText else KdeMuted
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalyticsFeed(
+    state: CoachUiState,
+    listState: LazyListState,
+    onSelectRun: (String) -> Unit
+) {
+    val tel = state.telemetry
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item("hdr") {
-            Text("History & Analytics", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        item("summary") { TelemetrySummaryBar(tel) }
+        item("weekly") { WeeklyStackedLoadCard(tel.last7DaysLoad, tel.weeklyLoad) }
+        item("zones") { PaceDistributionCard(tel.paceZones) }
+        state.runs.firstOrNull()?.let { latest ->
+            item("latest") { LatestRunCard(latest, onSelectRun) }
         }
-        if (selectedRun != null) {
-            item("detail") { RunDetailCard(selectedRun, pace, stats, onTrimTail, onExportGpx) }
+        if (tel.personalRecords.isNotEmpty()) {
+            item("prs") { PersonalRecordsCard(tel.personalRecords) }
         }
-        item("kpis") { AnalyticsKpiGrid(state) }
-        if (state.runs.size >= 2) {
-            item("trend") { DistanceTrendCard(state.runs.take(8).reversed()) }
-        }
-        item("load") { WeeklyLoadCard(state.weeklyLoad) }
-        item("heat") { WalkingHeatmapCard(state.weekdayWalkHeatmap) }
-        if (state.personalRecords.isNotEmpty()) {
-            item("prs") { PersonalRecordsCard(state.personalRecords) }
-        }
-        item("runs_hdr") {
-            Text("Saved Runs (${state.runs.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        }
-        if (state.runs.isEmpty()) {
+    }
+}
+
+@Composable
+private fun HistoryFeed(
+    runs: List<RunRecord>,
+    listState: LazyListState,
+    onSelectRun: (String) -> Unit
+) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (runs.isEmpty()) {
             item("empty") {
-                StrideCard { Text("No runs yet. Record a run or import a .backup.", style = MaterialTheme.typography.bodySmall, color = KdeMuted) }
-            }
-        } else {
-            items(state.runs, key = { it.id }) { r -> RunVisualCard(r, onSelectRun) }
-        }
-    }
-}
-
-@Composable
-private fun AnalyticsKpiGrid(state: CoachUiState) {
-    val runKm = state.runs.sumOf { it.distanceMeters } / 1000.0
-    val avgPace = if (state.runs.isEmpty()) 0 else state.runs.map { it.paceSecondsPerKm }.filter { it > 0 }.average().toInt()
-    val walkKm = if (state.walkLogs.isEmpty()) 0.0 else state.walkLogs.map { it.km() }.average()
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            KpiStatTile("Total Run", "%.1f km".format(runKm), Modifier.weight(1f), KdePurple)
-            KpiStatTile("Runs Logged", "${state.runs.size}", Modifier.weight(1f))
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            KpiStatTile("Avg Pace", "${formatPace(avgPace)} /km", Modifier.weight(1f))
-            KpiStatTile("Avg Walk/Day", "%.1f km".format(walkKm), Modifier.weight(1f), KdeSky)
-        }
-    }
-}
-
-@Composable
-private fun DistanceTrendCard(recent: List<RunRecord>) {
-    StrideCard {
-        Text("Recent Run Distances (km)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Canvas(modifier = Modifier.fillMaxWidth().height(120.dp)) {
-            val maxKm = recent.maxOf { it.km() }.coerceAtLeast(1.0).toFloat()
-            val stepX = size.width / (recent.size - 1).coerceAtLeast(1)
-            val pts = recent.mapIndexed { i, r ->
-                val y = size.height - ((r.km().toFloat() / maxKm) * (size.height - 20f)) - 10f
-                Offset(i * stepX, y)
-            }
-            val line = Path().apply {
-                moveTo(pts.first().x, pts.first().y)
-                for (i in 0 until pts.lastIndex) {
-                    val cx = (pts[i].x + pts[i + 1].x) / 2f
-                    cubicTo(cx, pts[i].y, cx, pts[i + 1].y, pts[i + 1].x, pts[i + 1].y)
+                StrideCard {
+                    Text(
+                        "No runs yet. Record a run or import a .backup in Data & Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KdeMuted
+                    )
                 }
             }
-            val fill = Path().apply {
-                addPath(line)
-                lineTo(pts.last().x, size.height)
-                lineTo(pts.first().x, size.height)
-                close()
+        } else {
+            items(runs, key = { it.id }) { run ->
+                RunTelemetryCard(run, onSelectRun)
             }
-            drawPath(fill, Brush.verticalGradient(listOf(KdePurple.copy(alpha = 0.35f), Color.Transparent)))
-            drawPath(line, KdePurple, style = Stroke(width = 5f, cap = StrokeCap.Round))
-            pts.forEach { drawCircle(Color.White, radius = 5f, center = it) }
         }
     }
 }
 
 @Composable
-private fun WeeklyLoadCard(weeks: List<WeeklyLoadPoint>) {
+private fun TelemetrySummaryBar(t: TelemetrySummary) {
+    val hrs = t.totalDurationMillis / 3_600_000L
+    val mins = (t.totalDurationMillis % 3_600_000L) / 60_000L
+    val durText = if (hrs > 0) "${hrs}h ${mins}m" else "${mins}m"
+    val cadText = if (t.avgCadenceSpm > 0) "${t.avgCadenceSpm} spm" else "—"
+    TelemetryStatStrip(
+        items = listOf(
+            "%.1f km".format(t.totalRunKm) to "Distance",
+            durText to "Time",
+            "${formatPace(t.avgPaceSecPerKm)}/km" to "Avg Pace",
+            cadText to "Cadence"
+        )
+    )
+}
+
+@Composable
+private fun WeeklyStackedLoadCard(bars: List<DailyLoadBar>, weeks: List<WeeklyLoadPoint>) {
+    var mode by remember { mutableIntStateOf(0) }
     StrideCard {
-        Text("Combined On-Feet Load (Run + Walk)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        if (weeks.isEmpty()) {
-            Text("Import runs or Timeline.json to view weekly load.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("WEEKLY LOAD (RUN + WALK)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                LegendDot("Run", KdePurple)
+                LegendDot("Walk", KdeSky)
+                Text(
+                    if (mode == 0) "7D" else "6W",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = KdePurple,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clickable { mode = (mode + 1) % 2 }
+                )
+            }
+        }
+        val items = if (mode == 0) {
+            bars.map { Triple(it.dayLabel, it.runMeters, it.walkMeters) }
+        } else {
+            weeks.takeLast(6).map { Triple(it.weekLabel.takeLast(3), it.runMeters, it.walkMeters) }
+        }
+        VerticalStackedBarsChart(items)
+    }
+}
+
+@Composable
+private fun VerticalStackedBarsChart(items: List<Triple<String, Int, Int>>) {
+    if (items.isEmpty()) {
+        Text("Import runs or Timeline.json to view load.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
+        return
+    }
+    val maxM = items.maxOf { it.second + it.third }.coerceAtLeast(1_000)
+    Canvas(modifier = Modifier.fillMaxWidth().height(92.dp)) {
+        val slotW = size.width / items.size.coerceAtLeast(1)
+        val barW = (slotW * 0.48f).coerceAtMost(28.dp.toPx())
+        items.forEachIndexed { idx, (_, runM, walkM) ->
+            val x = idx * slotW + (slotW - barW) / 2f
+            val runH = (runM.toFloat() / maxM) * (size.height - 6f)
+            val walkH = (walkM.toFloat() / maxM) * (size.height - 6f)
+            val totalH = (runH + walkH).coerceAtLeast(if (runM + walkM > 0) 4f else 0f)
+            if (walkH > 0f) {
+                drawRoundRect(
+                    color = KdeSky,
+                    topLeft = Offset(x, size.height - totalH),
+                    size = Size(barW, walkH),
+                    cornerRadius = CornerRadius(4f, 4f)
+                )
+            }
+            if (runH > 0f) {
+                drawRoundRect(
+                    color = KdePurple,
+                    topLeft = Offset(x, size.height - runH),
+                    size = Size(barW, runH),
+                    cornerRadius = CornerRadius(4f, 4f)
+                )
+            }
+        }
+    }
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+        items.forEach { (lbl, _, _) ->
+            Text(lbl, style = MaterialTheme.typography.labelSmall, color = KdeMuted)
+        }
+    }
+}
+
+@Composable
+private fun LegendDot(label: String, color: Color) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(8.dp).background(color, CircleShape))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = KdeMuted)
+    }
+}
+
+@Composable
+private fun PaceDistributionCard(zones: List<PaceZoneBucket>) {
+    StrideCard {
+        Text("PACE DISTRIBUTION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        if (zones.all { it.durationMillis == 0L }) {
+            Text("Log a run to unlock pace zone distribution.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
             return@StrideCard
         }
-        val maxM = weeks.maxOf { it.totalMeters }.coerceAtLeast(1_000)
-        weeks.takeLast(6).forEach { w -> WeeklyBarRow(w, maxM) }
-    }
-}
-
-@Composable
-private fun WeeklyBarRow(w: WeeklyLoadPoint, maxM: Int) {
-    val rFrac = (w.runMeters.toFloat() / maxM).coerceIn(0f, 1f)
-    val wFrac = (w.walkMeters.toFloat() / maxM).coerceIn(0f, 1f)
-    Text("${w.weekLabel}: ${"%.1f".format(w.runMeters / 1000.0)} km run + ${"%.1f".format(w.walkMeters / 1000.0)} km walk", style = MaterialTheme.typography.bodySmall)
-    Row(modifier = Modifier.fillMaxWidth().height(8.dp)) {
-        if (rFrac > 0f) Box(Modifier.fillMaxWidth(rFrac).height(8.dp).background(KdePurple, RoundedCornerShape(4.dp)))
-        if (wFrac > 0f) Box(Modifier.fillMaxWidth(wFrac).height(8.dp).background(KdeSky, RoundedCornerShape(4.dp)))
-    }
-}
-
-@Composable
-private fun WalkingHeatmapCard(map: Map<DayOfWeek, Int>) {
-    StrideCard {
-        Text("Weekday Walking Heatmap (Avg km)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            DayOfWeek.entries.forEach { d -> HeatmapCell(d.name.take(3), (map[d] ?: 0) / 1000.0) }
+        zones.forEach { z ->
+            val col = paceZoneColor(z.zone)
+            val frac = (z.percent / 100f).coerceIn(0.03f, 1f)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Z${z.zone}", style = MaterialTheme.typography.labelMedium, color = col, fontWeight = FontWeight.Bold)
+                Box(modifier = Modifier.weight(1f)) {
+                    Box(modifier = Modifier.fillMaxWidth(frac).height(9.dp).background(col, RoundedCornerShape(4.dp)))
+                }
+                Text("${z.percent}%", style = MaterialTheme.typography.labelMedium.merge(TabularNumberStyle), color = KdeText)
+            }
         }
     }
 }
 
 @Composable
-private fun HeatmapCell(day: String, km: Double) {
-    Column {
-        Text(day, style = MaterialTheme.typography.labelSmall, color = KdeMuted)
-        Text("%.1f".format(km), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+private fun LatestRunCard(r: RunRecord, onSelect: (String) -> Unit) {
+    StrideCard(modifier = Modifier.clickable { onSelect(r.id) }) {
+        Text("LATEST RUN • ${r.name.uppercase()}", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = KdeMuted)
+        RunPreviewHeaderMetrics(r)
+        if (r.hasTrack()) {
+            StaticRouteMapThumbnail(run = r, modifier = Modifier.fillMaxWidth().height(132.dp))
+        }
+    }
+}
+
+@Composable
+private fun RunTelemetryCard(r: RunRecord, onSelect: (String) -> Unit) {
+    val dt = remember(r.startTimestampMillis) {
+        DateTimeFormatter.ofPattern("MMM d, HH:mm").format(
+            Instant.ofEpochMilli(r.startTimestampMillis).atZone(ZoneId.systemDefault())
+        )
+    }
+    StrideCard(modifier = Modifier.clickable { onSelect(r.id) }) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(r.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(dt, style = MaterialTheme.typography.labelSmall, color = KdeMuted)
+            }
+            if (r.avgCadenceSpm > 0) StatusPill("${r.avgCadenceSpm} spm", KdeSky)
+        }
+        RunPreviewHeaderMetrics(r)
+        if (r.hasTrack()) {
+            StaticRouteMapThumbnail(run = r, modifier = Modifier.fillMaxWidth().height(136.dp))
+        }
+    }
+}
+
+@Composable
+private fun RunPreviewHeaderMetrics(r: RunRecord) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("${"%.2f".format(r.km())} km", style = MaterialTheme.typography.bodyMedium.merge(TabularNumberStyle), color = KdePurple, fontWeight = FontWeight.Bold)
+        Text(formatDuration(r.durationMillis), style = MaterialTheme.typography.bodyMedium.merge(TabularNumberStyle), fontWeight = FontWeight.SemiBold)
+        Text("${formatPace(r.paceSecondsPerKm)}/km", style = MaterialTheme.typography.bodyMedium.merge(TabularNumberStyle))
+        Text("${r.caloriesBurned} kcal", style = MaterialTheme.typography.bodySmall.merge(TabularNumberStyle), color = KdeMuted)
     }
 }
 
 @Composable
 private fun PersonalRecordsCard(prs: List<PersonalRecord>) {
     StrideCard {
-        Text("Personal Records", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("PERSONAL RECORDS", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
         prs.forEach { pr ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(pr.label, style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-                Text(formatDuration(pr.bestDurationMillis), style = MaterialTheme.typography.bodySmall, color = KdePurple, fontWeight = FontWeight.Bold)
+                Text(
+                    formatDuration(pr.bestDurationMillis),
+                    style = MaterialTheme.typography.bodySmall.merge(TabularNumberStyle),
+                    color = KdePurple,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
-}
-
-@Composable
-private fun RunVisualCard(r: RunRecord, onSelect: (String) -> Unit) {
-    val thumb = remember(r.id, r.encodedPolyline) {
-        EncodedPolylineCodec.synthesizeReplayTrack(r.encodedPolyline, r.startTimestampMillis, r.durationMillis, r.splits)
-    }
-    StrideCard(modifier = Modifier.clickable { onSelect(r.id) }) {
-        Text(r.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("${"%.2f".format(r.km())} km", style = MaterialTheme.typography.bodySmall, color = KdePurple, fontWeight = FontWeight.Bold)
-            Text(formatDuration(r.durationMillis), style = MaterialTheme.typography.bodySmall)
-            Text("${formatPace(r.paceSecondsPerKm)} /km", style = MaterialTheme.typography.bodySmall)
-            Text("${r.caloriesBurned} kcal", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-        }
-        if (thumb.size >= 2) {
-            OsmRouteMap(
-                pts = thumb,
-                interactive = false,
-                modifier = Modifier.fillMaxWidth().height(150.dp)
-            )
-        }
-    }
-}
-
-@Composable
-private fun RunDetailCard(run: RunRecord, targetPace: Int, stats: RunAnalyticsEngine, onTrim: (Long) -> Unit, onGpx: () -> Unit) {
-    val pts = remember(run.id, run.durationMillis, run.trackPoints.size) {
-        run.trackPoints.ifEmpty {
-            EncodedPolylineCodec.synthesizeReplayTrack(run.encodedPolyline, run.startTimestampMillis, run.durationMillis, run.splits)
-        }
-    }
-    val evals = remember(run.splits, targetPace) { stats.evaluateSplitDiscipline(run.splits, targetPace) }
-    StrideCard {
-        RunHeaderRow(run, onGpx)
-        RunReplayPlayer(points = pts)
-        if (evals.isNotEmpty()) SplitDisciplineList(evals, targetPace)
-        TailTrimmerSection(run, onTrim)
-    }
-}
-
-@Composable
-private fun RunHeaderRow(run: RunRecord, onGpx: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(run.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text("${"%.2f".format(run.km())} km • ${formatDuration(run.durationMillis)} • ${formatPace(run.paceSecondsPerKm)}/km", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-        }
-        OutlinedButton(onClick = onGpx, shape = RoundedCornerShape(999.dp)) { Text("GPX") }
-    }
-}
-
-@Composable
-private fun SplitDisciplineList(evals: List<SplitEvaluation>, targetPace: Int) {
-    Text("Split Discipline vs. ${formatPace(targetPace)}/km", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-    evals.forEach { ev ->
-        val c = when (ev.flag) {
-            SplitDisciplineFlag.EARLY_SURGE -> PaceTooFast
-            SplitDisciplineFlag.LATE_FADE -> PaceTooSlow
-            SplitDisciplineFlag.ON_TARGET -> PaceOnTarget
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("KM ${ev.split.splitNumber}", style = MaterialTheme.typography.bodySmall)
-            Text("${formatPace(ev.paceSecPerKm)} /km", color = c, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-            Text(ev.flag.name.replace('_', ' '), color = c, style = MaterialTheme.typography.labelSmall)
-        }
-    }
-}
-
-@Composable
-private fun TailTrimmerSection(run: RunRecord, onTrim: (Long) -> Unit) {
-    var frac by remember(run.id, run.durationMillis) { mutableFloatStateOf(1f) }
-    val keep = (run.durationMillis * frac).toLong().coerceAtLeast(10_000L)
-    Text("Post-Run Tail Trimmer", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-    Text("Keep first ${formatDuration(keep)} of ${formatDuration(run.durationMillis)}", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-    Slider(value = frac, onValueChange = { frac = it }, valueRange = 0.25f..1f)
-    if (frac < 0.99f) Button(onClick = { onTrim(keep) }, shape = RoundedCornerShape(999.dp)) { Text("Apply Tail Trim") }
 }

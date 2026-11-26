@@ -1,0 +1,290 @@
+package com.stridecoach.running.ui.components
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PointF
+import android.util.LruCache
+import androidx.compose.foundation.Canvas as ComposeCanvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import com.stridecoach.running.core.domain.engine.EncodedPolylineCodec
+import com.stridecoach.running.core.domain.engine.LatLon
+import com.stridecoach.running.core.domain.model.RunRecord
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.maps.Style
+import org.maplibre.android.snapshotter.MapSnapshotter
+import java.io.File
+import java.io.FileOutputStream
+import kotlin.coroutines.resume
+import kotlin.math.PI
+import kotlin.math.atan
+import kotlin.math.cos
+import kotlin.math.ln
+import kotlin.math.log2
+import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sinh
+import kotlin.math.tan
+
+internal data class ThumbCam(val cLat: Double, val cLon: Double, val zoom: Double)
+
+object StaticMapSnapshotter {
+    private const val W = 680
+    private const val H = 280
+    private const val PAD_Y = 30
+    private const val H_SNAP = H + PAD_Y * 2
+
+    private val ram = LruCache<String, ImageBitmap>(48)
+    private val glLock = Mutex()
+
+    suspend fun preloadAll(ctx: Context, runs: List<RunRecord>) {
+        withContext(Dispatchers.Default) {
+            for (r in runs) {
+                if (r.hasTrack()) runCatching { loadOrRender(ctx, r) }
+            }
+        }
+    }
+
+    suspend fun loadOrRender(ctx: Context, run: RunRecord): ImageBitmap? {
+        if (!run.hasTrack()) return null
+        val key = "${run.id}_${run.encodedPolyline.hashCode()}_${run.distanceMeters}"
+        ram.get(key)?.let { return it }
+
+        val dir = withContext(Dispatchers.IO) { File(ctx.cacheDir, "vec_thumbs_v2").apply { mkdirs() } }
+        val file = File(dir, "$key.png")
+        val disk = withContext(Dispatchers.IO) { decodeCached(file) }
+        if (disk != null) {
+            ram.put(key, disk)
+            return disk
+        }
+
+        val pts = withContext(Dispatchers.Default) { extractPts(run) }
+        if (pts.size < 2) return null
+
+        val rendered = glLock.withLock {
+            decodeCached(file) ?: renderVectorSnapshot(ctx, pts, file)
+        }
+        rendered?.let { ram.put(key, it) }
+        return rendered
+    }
+
+    private fun decodeCached(f: File): ImageBitmap? {
+        if (!f.exists() || f.length() <= 256L) return null
+        return BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap()
+    }
+
+    private fun extractPts(run: RunRecord): List<LatLon> {
+        val raw = if (run.trackPoints.size >= 2) {
+            run.trackPoints.map { LatLon(it.latitude, it.longitude) }
+        } else {
+            EncodedPolylineCodec.decode(run.encodedPolyline)
+        }
+        return raw.filter { it.latitude in -85.0..85.0 && it.longitude in -179.9..179.9 }
+    }
+
+    internal fun computeThumbCam(pts: List<LatLon>): ThumbCam {
+        val mxs = pts.map { (it.longitude + 180.0) / 360.0 }
+        val mys = pts.map { latToNormY(it.latitude) }
+        val minX = mxs.min()
+        val maxX = mxs.max()
+        val minY = mys.min()
+        val maxY = mys.max()
+        val cx = (minX + maxX) / 2.0
+        val cy = (minY + maxY) / 2.0
+        val dx = (maxX - minX).coerceAtLeast(1e-6)
+        val dy = (maxY - minY).coerceAtLeast(1e-6)
+        val zx = log2((W * 0.74) / (512.0 * dx))
+        val zy = log2((H * 0.72) / (512.0 * dy))
+        val z = min(zx, zy).coerceIn(10.0, 16.5)
+        val lon = cx * 360.0 - 180.0
+        val lat = Math.toDegrees(atan(sinh(PI * (1.0 - 2.0 * cy))))
+        return ThumbCam(lat, lon, z)
+    }
+
+    internal fun projectPoint(pt: LatLon, cam: ThumbCam, scale: Float, ox: Float, oy: Float): Offset {
+        val worldPx = 512.0 * 2.0.pow(cam.zoom)
+        val cx = ((cam.cLon + 180.0) / 360.0) * worldPx
+        val cy = latToNormY(cam.cLat) * worldPx
+        val px = ((pt.longitude + 180.0) / 360.0) * worldPx
+        val py = latToNormY(pt.latitude) * worldPx
+        val x = (W / 2.0 + (px - cx)).toFloat() * scale + ox
+        val y = (H / 2.0 + (py - cy)).toFloat() * scale + oy
+        return Offset(x, y)
+    }
+
+    private fun latToNormY(lat: Double): Double {
+        val r = Math.toRadians(lat.coerceIn(-85.0, 85.0))
+        return (1.0 - ln(tan(r) + 1.0 / cos(r)) / PI) / 2.0
+    }
+
+    private suspend fun renderVectorSnapshot(ctx: Context, pts: List<LatLon>, dest: File): ImageBitmap? {
+        val cam = computeThumbCam(pts)
+        val bmp = withTimeoutOrNull(8_000L) {
+            withContext(Dispatchers.Main) { takeMapLibreSnap(ctx.applicationContext, cam, pts) }
+        } ?: return null
+        withContext(Dispatchers.IO) {
+            runCatching { FileOutputStream(dest).use { bmp.compress(Bitmap.CompressFormat.PNG, 92, it) } }
+        }
+        return bmp.asImageBitmap()
+    }
+
+    private suspend fun takeMapLibreSnap(
+        ctx: Context,
+        cam: ThumbCam,
+        pts: List<LatLon>
+    ): Bitmap? = suspendCancellableCoroutine { cont ->
+        val pos = CameraPosition.Builder().target(LatLng(cam.cLat, cam.cLon)).zoom(cam.zoom).build()
+        val opts = MapSnapshotter.Options(W, H_SNAP)
+            .withStyleBuilder(Style.Builder().fromUri(OPENFREEMAP_DARK_STYLE))
+            .withCameraPosition(pos)
+            .withLogo(false)
+
+        val snap = MapSnapshotter(ctx, opts)
+        cont.invokeOnCancellation { snap.cancel() }
+        snap.start(
+            { res ->
+                runCatching {
+                    val raw = res.bitmap
+                    val cropY = PAD_Y.coerceAtMost((raw.height - H).coerceAtLeast(0))
+                    val cropH = H.coerceAtMost(raw.height)
+                    val bmp = Bitmap.createBitmap(raw, 0, cropY, raw.width, cropH)
+                    val pxPts = pts.map { p ->
+                        val pf = res.pixelForLatLng(LatLng(p.latitude, p.longitude))
+                        PointF(pf.x, pf.y - cropY)
+                    }
+                    drawRouteOverlay(bmp, pxPts)
+                    if (cont.isActive) cont.resume(bmp)
+                }.onFailure {
+                    if (cont.isActive) cont.resume(null)
+                }
+            },
+            { _ -> if (cont.isActive) cont.resume(null) }
+        )
+    }
+
+    private fun drawRouteOverlay(bmp: Bitmap, pxPts: List<PointF>) {
+        if (pxPts.size < 2) return
+        val cv = Canvas(bmp)
+        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(100, 146, 110, 228)
+            strokeWidth = 12f
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.parseColor("#926EE4")
+            strokeWidth = 5.5f
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val path = Path()
+        pxPts.forEachIndexed { i, p -> if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y) }
+        cv.drawPath(path, glow)
+        cv.drawPath(path, stroke)
+
+        val s = pxPts.first()
+        val e = pxPts.last()
+        cv.drawCircle(s.x, s.y, 6f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#4ADE80") })
+        cv.drawCircle(e.x, e.y, 6f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#3DAEE9") })
+    }
+
+    internal const val SNAP_W = W
+    internal const val SNAP_H = H
+}
+
+@Composable
+fun StaticRouteMapThumbnail(
+    run: RunRecord,
+    modifier: Modifier = Modifier
+) {
+    val ctx = LocalContext.current
+    var img by remember(run.id, run.encodedPolyline) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(run.id, run.encodedPolyline, run.distanceMeters) {
+        img = StaticMapSnapshotter.loadOrRender(ctx, run)
+    }
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF16191D))
+    ) {
+        val bmp = img
+        if (bmp != null) {
+            Image(bmp, "Route map preview", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        } else {
+            VectorPlaceholderCanvas(run.encodedPolyline)
+        }
+    }
+}
+
+@Composable
+private fun VectorPlaceholderCanvas(poly: String) {
+    val pts = remember(poly) { EncodedPolylineCodec.decode(poly) }
+    val cam = remember(pts) { if (pts.size >= 2) StaticMapSnapshotter.computeThumbCam(pts) else null }
+
+    ComposeCanvas(modifier = Modifier.fillMaxSize()) {
+        val grid = Color(0xFF23272E)
+        val step = 28.dp.toPx()
+        var gx = 0f
+        while (gx < size.width) {
+            drawLine(grid, Offset(gx, 0f), Offset(gx, size.height), 1f)
+            gx += step
+        }
+        val c = cam ?: return@ComposeCanvas
+        val scale = maxOf(size.width / StaticMapSnapshotter.SNAP_W, size.height / StaticMapSnapshotter.SNAP_H)
+        val ox = (size.width - StaticMapSnapshotter.SNAP_W * scale) / 2f
+        val oy = (size.height - StaticMapSnapshotter.SNAP_H * scale) / 2f
+
+        val path = androidx.compose.ui.graphics.Path()
+        var firstOff = Offset.Zero
+        var lastOff = Offset.Zero
+        pts.forEachIndexed { idx, pt ->
+            val off = StaticMapSnapshotter.projectPoint(pt, c, scale, ox, oy)
+            if (idx == 0) {
+                firstOff = off
+                path.moveTo(off.x, off.y)
+            } else {
+                path.lineTo(off.x, off.y)
+            }
+            lastOff = off
+        }
+        drawPath(path, Color(0xFF926EE4), style = Stroke(width = 5.5f * scale, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawCircle(Color(0xFF4ADE80), radius = 6f * scale, center = firstOff)
+        drawCircle(Color(0xFF3DAEE9), radius = 6f * scale, center = lastOff)
+    }
+}

@@ -10,12 +10,13 @@ import androidx.room.RoomDatabase
         RunEntity::class,
         TrackPointEntity::class,
         RunSplitEntity::class,
+        DetectedSegmentEntity::class,
         WalkLogEntity::class,
         TrainingPlanEntity::class,
         PlannedDayEntity::class,
         WorkoutTemplateEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class RunningDatabase : RoomDatabase() {

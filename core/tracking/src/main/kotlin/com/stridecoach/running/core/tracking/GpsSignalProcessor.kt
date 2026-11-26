@@ -40,7 +40,8 @@ class GpsSignalProcessor(
         fix: RawGpsFix,
         segIdx: Int?,
         paused: Boolean,
-        autoPause: Boolean
+        autoPause: Boolean,
+        cadenceSpm: Int? = null
     ): Pair<TrackPoint?, MovementState> {
         if (fix.accuracyMeters > maxAccM) {
             return Pair(null, stateAt(fix.timestampMillis, autoPause))
@@ -49,7 +50,7 @@ class GpsSignalProcessor(
         if (prev == null) {
             val pt = TrackPoint(
                 0, fix.timestampMillis, 0L, fix.latitude, fix.longitude,
-                fix.altitudeMeters, fix.accuracyMeters, fix.speedMps, 0f, 0.0, segIdx, paused
+                fix.altitudeMeters, fix.accuracyMeters, fix.speedMps, 0f, 0.0, segIdx, paused, cadenceSpm
             )
             pts.add(pt)
             lastMs = fix.timestampMillis
@@ -75,7 +76,7 @@ class GpsSignalProcessor(
         val brg = GeoMath.bearingDegrees(prev.latitude, prev.longitude, fix.latitude, fix.longitude)
         val pt = TrackPoint(
             pts.size, fix.timestampMillis, elMs, fix.latitude, fix.longitude,
-            fix.altitudeMeters, fix.accuracyMeters, v.toFloat(), brg, distM, segIdx, stop
+            fix.altitudeMeters, fix.accuracyMeters, v.toFloat(), brg, distM, segIdx, stop, cadenceSpm
         )
         pts.add(pt)
         return Pair(pt, mv)

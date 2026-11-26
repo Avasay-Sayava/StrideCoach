@@ -1,25 +1,36 @@
 package com.stridecoach.running.core.data.db
 
 import androidx.room.Dao
+import androidx.room.Embedded
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Relation
 import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
+
+data class RunWithSplits(
+    @Embedded val run: RunEntity,
+    @Relation(parentColumn = "id", entityColumn = "runId")
+    val splits: List<RunSplitEntity>
+)
 
 data class FullRunBundle(
     val run: RunEntity,
     val splits: List<RunSplitEntity>,
-    val points: List<TrackPointEntity>
+    val points: List<TrackPointEntity>,
+    val segments: List<DetectedSegmentEntity> = emptyList()
 )
 
 @Dao
 interface RunDao {
+    @Transaction
     @Query("SELECT * FROM runs ORDER BY startTimestampMillis DESC")
-    fun observeRuns(): Flow<List<RunEntity>>
+    fun observeRunsWithSplits(): Flow<List<RunWithSplits>>
 
+    @Transaction
     @Query("SELECT * FROM runs ORDER BY startTimestampMillis DESC")
-    suspend fun getAllRuns(): List<RunEntity>
+    suspend fun getAllRunsWithSplits(): List<RunWithSplits>
 
     @Query("SELECT * FROM runs WHERE id = :runId LIMIT 1")
     suspend fun getRun(runId: String): RunEntity?
@@ -30,6 +41,9 @@ interface RunDao {
     @Query("SELECT * FROM track_points WHERE runId = :runId ORDER BY seqIndex ASC")
     suspend fun getTrackPoints(runId: String): List<TrackPointEntity>
 
+    @Query("SELECT * FROM detected_segments WHERE runId = :runId ORDER BY startMs ASC")
+    suspend fun getDetectedSegments(runId: String): List<DetectedSegmentEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertRun(run: RunEntity)
 
@@ -39,33 +53,36 @@ interface RunDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTrackPoints(points: List<TrackPointEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSegments(segments: List<DetectedSegmentEntity>)
+
     @Query("DELETE FROM run_splits WHERE runId = :runId")
     suspend fun deleteSplits(runId: String)
 
     @Query("DELETE FROM track_points WHERE runId = :runId")
     suspend fun deleteTrackPoints(runId: String)
 
+    @Query("DELETE FROM detected_segments WHERE runId = :runId")
+    suspend fun deleteSegments(runId: String)
+
     @Query("DELETE FROM runs WHERE id = :runId")
     suspend fun deleteRun(runId: String)
 
     @Transaction
-    suspend fun replaceRunFull(
-        run: RunEntity,
-        splits: List<RunSplitEntity>,
-        points: List<TrackPointEntity>
-    ) {
+    suspend fun replaceRunFull(bundle: FullRunBundle) {
+        val run = bundle.run
         upsertRun(run)
         deleteSplits(run.id)
         deleteTrackPoints(run.id)
-        if (splits.isNotEmpty()) insertSplits(splits)
-        if (points.isNotEmpty()) insertTrackPoints(points)
+        deleteSegments(run.id)
+        if (bundle.splits.isNotEmpty()) insertSplits(bundle.splits)
+        if (bundle.points.isNotEmpty()) insertTrackPoints(bundle.points)
+        if (bundle.segments.isNotEmpty()) insertSegments(bundle.segments)
     }
 
     @Transaction
     suspend fun replaceRunsBatch(items: List<FullRunBundle>) {
-        for (item in items) {
-            replaceRunFull(item.run, item.splits, item.points)
-        }
+        for (item in items) replaceRunFull(item)
     }
 }
 
@@ -73,6 +90,9 @@ interface RunDao {
 interface WalkDao {
     @Query("SELECT * FROM walking_logs ORDER BY dateEpochDay DESC")
     fun observeWalkLogs(): Flow<List<WalkLogEntity>>
+
+    @Query("SELECT * FROM walking_logs")
+    suspend fun getAll(): List<WalkLogEntity>
 
     @Query("SELECT * FROM walking_logs WHERE dateEpochDay = :epochDay LIMIT 1")
     suspend fun getByDay(epochDay: Long): WalkLogEntity?

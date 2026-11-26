@@ -59,7 +59,8 @@ fun PlanBuilderScreen(
     onActivatePlan: (TrainingPlanConfig) -> Unit,
     onRecalibrate5k: (Long) -> Unit,
     onSaveTemplate: (StructuredWorkout) -> Unit,
-    onStartWorkout: (StructuredWorkout) -> Unit
+    onStartWorkout: (StructuredWorkout) -> Unit,
+    onOpenRoutePlanner: () -> Unit = {}
 ) {
     var subTab by remember { mutableIntStateOf(0) }
     val scroll = rememberScrollState()
@@ -69,7 +70,10 @@ fun PlanBuilderScreen(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("Training Plans", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Training Plans", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = onOpenRoutePlanner, shape = RoundedCornerShape(999.dp)) { Text("Draw Route") }
+        }
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             labels.forEachIndexed { idx, lbl ->
                 SegmentedButton(

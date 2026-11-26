@@ -4,6 +4,8 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.stridecoach.running.core.domain.model.ActivitySegmentType
+import com.stridecoach.running.core.domain.model.DetectedSegment
 import com.stridecoach.running.core.domain.model.RunRecord
 import com.stridecoach.running.core.domain.model.RunSource
 import com.stridecoach.running.core.domain.model.RunSplit
@@ -22,12 +24,20 @@ data class RunEntity(
     val encodedPolyline: String,
     val workoutId: String?,
     val planDayId: String?,
-    val source: String
+    val source: String,
+    val totalSteps: Int = 0,
+    val avgCadenceSpm: Int = 0,
+    val elevationGainMeters: Int = 0
 ) {
-    fun toDomain(sp: List<RunSplit>, pts: List<TrackPoint>): RunRecord = RunRecord(
+    fun toDomain(
+        sp: List<RunSplit>,
+        pts: List<TrackPoint>,
+        segs: List<DetectedSegment> = emptyList()
+    ): RunRecord = RunRecord(
         id, startTimestampMillis, distanceMeters, durationMillis, paceSecondsPerKm,
         caloriesBurned, name, description, encodedPolyline, sp, pts,
-        workoutId, planDayId, RunSource.valueOf(source)
+        workoutId, planDayId, RunSource.valueOf(source),
+        totalSteps, avgCadenceSpm, elevationGainMeters, segs
     )
 }
 
@@ -57,12 +67,13 @@ data class TrackPointEntity(
     val bearingDegrees: Float?,
     val cumulativeDistanceMeters: Double,
     val segmentIndex: Int?,
-    val isPaused: Boolean
+    val isPaused: Boolean,
+    val cadenceSpm: Int? = null
 ) {
     fun toDomain(): TrackPoint = TrackPoint(
         seqIndex, timestampMillis, elapsedMillis, latitude, longitude,
         altitudeMeters, accuracyMeters, speedMps, bearingDegrees,
-        cumulativeDistanceMeters, segmentIndex, isPaused
+        cumulativeDistanceMeters, segmentIndex, isPaused, cadenceSpm
     )
 }
 
@@ -85,9 +96,46 @@ data class RunSplitEntity(
     val distanceMeters: Int,
     val durationMillis: Long,
     val targetPaceMinSec: Int?,
-    val targetPaceMaxSec: Int?
+    val targetPaceMaxSec: Int?,
+    val avgCadenceSpm: Int = 0,
+    val elevationDeltaMeters: Int = 0
 ) {
-    fun toDomain(): RunSplit = RunSplit(splitNumber, distanceMeters, durationMillis, targetPaceMinSec, targetPaceMaxSec)
+    fun toDomain(): RunSplit = RunSplit(
+        splitNumber, distanceMeters, durationMillis,
+        targetPaceMinSec, targetPaceMaxSec, avgCadenceSpm, elevationDeltaMeters
+    )
+}
+
+@Entity(
+    tableName = "detected_segments",
+    foreignKeys = [
+        ForeignKey(
+            entity = RunEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["runId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index(value = ["runId", "startMs"])]
+)
+data class DetectedSegmentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val runId: String,
+    val type: String,
+    val startMs: Long,
+    val endMs: Long,
+    val distM: Int,
+    val steps: Int,
+    val paceSec: Int
+) {
+    fun toDomain(): DetectedSegment = DetectedSegment(
+        ActivitySegmentType.valueOf(type),
+        startMs,
+        endMs,
+        distM,
+        steps,
+        paceSec
+    )
 }
 
 @Entity(tableName = "walking_logs")

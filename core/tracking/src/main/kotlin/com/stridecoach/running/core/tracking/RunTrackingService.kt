@@ -17,6 +17,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.stridecoach.running.core.domain.engine.ActivitySegmentClassifier
 import com.stridecoach.running.core.domain.engine.CoachingEvent
 import com.stridecoach.running.core.domain.engine.EncodedPolylineCodec
 import com.stridecoach.running.core.domain.engine.LatLon
@@ -32,6 +33,7 @@ import kotlin.math.roundToInt
 class RunTrackingService : Service(), LocationListener {
     private var locMgr: LocationManager? = null
     private var coach: VoiceCoachEngine? = null
+    private var steps: StepCounterTracker? = null
     private var wake: PowerManager.WakeLock? = null
     private var gps = GpsSignalProcessor()
     private var sm: WorkoutStateMachine? = null
@@ -68,6 +70,7 @@ class RunTrackingService : Service(), LocationListener {
         splits.clear()
         gps = GpsSignalProcessor()
         sm = WorkoutStateMachine(w)
+        steps = StepCounterTracker(this).also { it.start() }
 
         lockCpu()
         TrackingSessionBus.update { LiveTrackingState(true, false, workout = w, planDayId = dayId) }
@@ -98,12 +101,13 @@ class RunTrackingService : Service(), LocationListener {
         val m = sm ?: return
         val ev = m.advanceManual(gps.totalDistanceMeters(), gps.activeElapsedMillis())
         emitEvents(ev)
-        pushNotif(m.currentStep()?.displayName() ?: "Free Run", summary())
+        pushNotif(m.currentStep()?.displayName() ?: "Open Run", summary())
     }
 
     private fun finish() {
         locMgr?.removeUpdates(this)
-        buildRun()?.let(TrackingSessionBus::emitCompletedRun)
+        steps?.stop()
+        buildRun()?.let(TrackingSessionBus::emitRun)
         TrackingSessionBus.update { LiveTrackingState(false) }
         unlockCpu()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -120,21 +124,37 @@ class RunTrackingService : Service(), LocationListener {
             if (loc.hasSpeed()) loc.speed else null
         )
         val idx = sm?.currentStep()?.index
-        val (_, mv) = gps.process(fix, idx, paused, TrackingSessionBus.autoPauseEnabled)
+        val cad = steps?.cadenceSpm?.value ?: 0
+        val (_, mv) = gps.process(fix, idx, paused, TrackingSessionBus.autoPauseEnabled, cad.takeIf { it > 0 })
         val pace = gps.rollingPaceSecPerKm()
         val res = sm?.onTick(gps.totalDistanceMeters(), gps.activeElapsedMillis(), pace)
         val snap = res?.first
         emitEvents(res?.second.orEmpty())
 
-        TrackingSessionBus.update { it.copy(movementState = mv, snapshot = snap, trackPoints = gps.points()) }
+        val pts = gps.points()
+        val kind = ActivitySegmentClassifier.classifyInstant(pts.lastOrNull()?.speedMps, cad, paused || mv != MovementState.MOVING)
+        val gain = ActivitySegmentClassifier.computeElevationGain(pts)
+        TrackingSessionBus.update {
+            it.copy(
+                movementState = mv,
+                snapshot = snap,
+                trackPoints = pts,
+                steps = steps?.sessionSteps?.value ?: 0,
+                cadenceSpm = cad,
+                actType = kind,
+                gpsAccM = fix.accuracyMeters,
+                elevM = gain
+            )
+        }
         val title = snap?.activeStep?.displayName() ?: TrackingSessionBus.state.value.workout?.title ?: "Live Run"
         pushNotif(title, summary())
     }
 
     private fun emitEvents(list: List<CoachingEvent>) {
+        val cad = steps?.cadenceSpm?.value ?: 0
         for (ev in list) {
             if (ev is CoachingEvent.SplitCompleted) {
-                splits.add(RunSplit(ev.kmNumber, 1_000, ev.splitDurationMillis))
+                splits.add(RunSplit(ev.kmNumber, 1_000, ev.splitDurationMillis, avgCadenceSpm = cad))
             }
             coach?.handleEvent(ev, TrackingSessionBus.voiceEnabled, TrackingSessionBus.hapticEnabled)
         }
@@ -150,6 +170,10 @@ class RunTrackingService : Service(), LocationListener {
         val cals = ((dist / 1000.0) * 62.0).roundToInt()
         val poly = EncodedPolylineCodec.encode(pts.map { LatLon(it.latitude, it.longitude) })
         val st = TrackingSessionBus.state.value
+        val segs = ActivitySegmentClassifier.classify(pts)
+        val gain = ActivitySegmentClassifier.computeElevationGain(pts)
+        val totSteps = steps?.sessionSteps?.value ?: 0
+        val avgCad = if (dur > 0L && totSteps > 0) ((totSteps / (dur / 60_000.0))).roundToInt() else 0
 
         return RunRecord(
             id = "run_${UUID.randomUUID()}",
@@ -165,7 +189,11 @@ class RunTrackingService : Service(), LocationListener {
             trackPoints = pts,
             workoutId = st.workout?.id,
             planDayId = st.planDayId,
-            source = RunSource.RECORDED
+            source = RunSource.RECORDED,
+            totalSteps = totSteps,
+            avgCadenceSpm = avgCad,
+            elevGainM = gain,
+            segs = segs
         )
     }
 
@@ -178,12 +206,17 @@ class RunTrackingService : Service(), LocationListener {
 
     private fun notif(title: String, text: String): Notification {
         val lbl = if (paused) "Resume" else "Pause"
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+        val openPi = launch?.let {
+            PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        }
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setContentIntent(openPi)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(0, lbl, actionPi(ACTION_PAUSE_RESUME, 1))
             .addAction(0, "Next", actionPi(ACTION_NEXT_STEP, 2))
@@ -223,6 +256,7 @@ class RunTrackingService : Service(), LocationListener {
 
     override fun onDestroy() {
         locMgr?.removeUpdates(this)
+        steps?.stop()
         coach?.shutdown()
         unlockCpu()
         super.onDestroy()

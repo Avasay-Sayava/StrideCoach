@@ -25,100 +25,145 @@ import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.StrideCard
 import com.stridecoach.running.ui.theme.KdeMuted
 import com.stridecoach.running.ui.theme.KdePurple
+import com.stridecoach.running.ui.theme.KdeSky
 import com.stridecoach.running.ui.theme.PaceOnTarget
 import com.stridecoach.running.ui.theme.PaceTooFast
 
 @Composable
 fun DataSettingsScreen(
-    preferences: CoachPreferences,
-    isImporting: Boolean,
-    lastImportSummary: String?,
-    runCount: Int,
-    walkDayCount: Int,
-    isBatteryUnrestricted: Boolean,
-    onUpdatePrefs: ((CoachPreferences) -> CoachPreferences) -> Unit,
-    onImportBackupClick: () -> Unit,
-    onExportBackupClick: () -> Unit,
-    onImportTimelineClick: () -> Unit,
-    onRequestBatteryUnrestricted: () -> Unit
-) {
-    val scroll = rememberScrollState()
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Text("Data & Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        DataPortabilityCard(isImporting, lastImportSummary, runCount, walkDayCount, onImportBackupClick, onExportBackupClick, onImportTimelineClick)
-        BatteryProtectionCard(isBatteryUnrestricted, onRequestBatteryUnrestricted)
-        ImportGuideCard()
-        CoachSettingsCard(preferences, onUpdatePrefs)
-    }
-}
-
-@Composable
-private fun DataPortabilityCard(
+    prefs: CoachPreferences,
     busy: Boolean,
     summary: String?,
     runs: Int,
     walkDays: Int,
-    onImpBackup: () -> Unit,
-    onExpBackup: () -> Unit,
-    onImpTimeline: () -> Unit
+    battOk: Boolean,
+    hcAvail: Boolean,
+    hcOk: Boolean,
+    onHcConnect: () -> Unit,
+    onHcSync: () -> Unit,
+    onAutoDetect: (Boolean) -> Unit,
+    onUpdate: ((CoachPreferences) -> CoachPreferences) -> Unit,
+    onImpBak: () -> Unit,
+    onExpBak: () -> Unit,
+    onImpTl: () -> Unit,
+    onBattReq: () -> Unit
+) {
+    val scrl = rememberScrollState()
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(scrl).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("Data & Automation", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        AutoCard(hcAvail, hcOk, prefs.autoDetectRunsEnabled, busy, onHcConnect, onHcSync, onAutoDetect)
+        PortabilityCard(busy, summary, runs, walkDays, onImpBak, onExpBak, onImpTl)
+        BattCard(battOk, onBattReq)
+        CoachCard(prefs, onUpdate)
+        GuideCard()
+    }
+}
+
+@Composable
+private fun AutoCard(
+    hcAvail: Boolean,
+    hcOk: Boolean,
+    auto: Boolean,
+    busy: Boolean,
+    onCon: () -> Unit,
+    onSync: () -> Unit,
+    onAuto: (Boolean) -> Unit
+) {
+    StrideCard {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Samsung Health & Auto-Detect", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            val tag = when {
+                !hcAvail -> "No HC"
+                hcOk -> "Connected"
+                else -> "Ready"
+            }
+            StatusPill(tag, if (hcOk) PaceOnTarget else KdeSky)
+        }
+        Text(
+            "Sync daily steps, walks, and exercise routes automatically via Android Health Connect.",
+            style = MaterialTheme.typography.bodySmall,
+            color = KdeMuted
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!hcOk && hcAvail) {
+                Button(onClick = onCon, shape = RoundedCornerShape(999.dp)) { Text("Connect Health") }
+            }
+            OutlinedButton(onClick = onSync, enabled = hcAvail && !busy, shape = RoundedCornerShape(999.dp)) {
+                Text("Sync Now")
+            }
+        }
+        ToggleRow("Prompt When Running Is Detected", auto, onAuto)
+    }
+}
+
+@Composable
+private fun PortabilityCard(
+    busy: Boolean,
+    sum: String?,
+    runs: Int,
+    walks: Int,
+    onImp: () -> Unit,
+    onExp: () -> Unit,
+    onTl: () -> Unit
 ) {
     StrideCard {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Lossless Data Import & Export", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            StatusPill("$runs runs • $walkDays walks", KdePurple)
+            Text("Lossless Import & Export", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StatusPill("$runs runs • $walks walks", KdePurple)
         }
         if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = KdePurple)
-        if (!summary.isNullOrBlank()) Text(summary, style = MaterialTheme.typography.bodySmall, color = PaceOnTarget)
+        if (!sum.isNullOrBlank()) Text(sum, style = MaterialTheme.typography.bodySmall, color = PaceOnTarget)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onImpBackup, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Import .backup") }
-            OutlinedButton(onClick = onExpBackup, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Export .backup") }
+            Button(onClick = onImp, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Import .backup") }
+            OutlinedButton(onClick = onExp, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Export .backup") }
         }
-        Button(onClick = onImpTimeline, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Import Google Timeline.json") }
+        Button(onClick = onTl, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Import Google Timeline.json") }
     }
 }
 
 @Composable
-private fun BatteryProtectionCard(unrestricted: Boolean, onRequest: () -> Unit) {
-    val msg = if (unrestricted) "Unrestricted (Safe for lock-screen GPS)" else "Optimized (Samsung One UI may pause GPS)"
+private fun BattCard(ok: Boolean, onReq: () -> Unit) {
+    val msg = if (ok) "Unrestricted (Safe for lock-screen GPS)" else "Optimized (Samsung One UI may pause GPS)"
     StrideCard {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Samsung Battery Guard", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            StatusPill(if (unrestricted) "Safe" else "Action Needed", if (unrestricted) PaceOnTarget else PaceTooFast)
+            StatusPill(if (ok) "Safe" else "Action Needed", if (ok) PaceOnTarget else PaceTooFast)
         }
         Text(msg, style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-        if (!unrestricted) {
-            Button(onClick = onRequest, shape = RoundedCornerShape(999.dp)) { Text("Allow Unrestricted Battery") }
+        if (!ok) {
+            Button(onClick = onReq, shape = RoundedCornerShape(999.dp)) { Text("Allow Unrestricted Battery") }
         }
     }
 }
 
 @Composable
-private fun ImportGuideCard() {
-    StrideCard {
-        Text("How to Import Your Existing Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text("1. Running Tracker (Play Store): Settings → Backup/Export → save .backup, then tap Import .backup.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-        Text("2. Google Maps Timeline: Settings → Location → Timeline → Export Timeline data (Timeline.json).", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-    }
-}
-
-@Composable
-private fun CoachSettingsCard(p: CoachPreferences, onUpdate: ((CoachPreferences) -> CoachPreferences) -> Unit) {
+private fun CoachCard(p: CoachPreferences, onUp: ((CoachPreferences) -> CoachPreferences) -> Unit) {
     StrideCard {
         Text("Audio, Haptics & Lock-Screen Safety", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        SettingToggle("English Voice Coach (TTS)", p.voiceCoachEnabled) { v -> onUpdate { it.copy(voiceCoachEnabled = v) } }
-        SettingToggle("Haptic Vibration Cues", p.hapticCuesEnabled) { v -> onUpdate { it.copy(hapticCuesEnabled = v) } }
-        SettingToggle("Smart Auto-Pause When Stopped", p.autoPauseEnabled) { v -> onUpdate { it.copy(autoPauseEnabled = v) } }
-        SettingToggle("Keep Screen Awake During Run", p.keepScreenAwake) { v -> onUpdate { it.copy(keepScreenAwake = v) } }
+        ToggleRow("English Voice Coach (TTS)", p.voiceCoachEnabled) { v -> onUp { it.copy(voiceCoachEnabled = v) } }
+        ToggleRow("Haptic Vibration Cues", p.hapticCuesEnabled) { v -> onUp { it.copy(hapticCuesEnabled = v) } }
+        ToggleRow("Smart Auto-Pause When Stopped", p.autoPauseEnabled) { v -> onUp { it.copy(autoPauseEnabled = v) } }
+        ToggleRow("Keep Screen Awake During Run", p.keepScreenAwake) { v -> onUp { it.copy(keepScreenAwake = v) } }
     }
 }
 
 @Composable
-private fun SettingToggle(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun GuideCard() {
+    StrideCard {
+        Text("About Google Timeline & Samsung Health", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("1. Running Tracker: Settings -> Backup -> save .backup -> tap Import .backup.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
+        Text("2. Google Timeline: Export Timeline.json on-device and import here for past walks.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
+        Text("3. Ongoing walks sync automatically from Samsung Health via Android Health Connect.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
+    }
+}
+
+@Composable
+private fun ToggleRow(lbl: String, chk: Boolean, onChg: (Boolean) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(title, style = MaterialTheme.typography.bodyMedium)
-        Switch(checked = checked, onCheckedChange = onChange)
+        Text(lbl, style = MaterialTheme.typography.bodyMedium)
+        Switch(checked = chk, onCheckedChange = onChg)
     }
 }

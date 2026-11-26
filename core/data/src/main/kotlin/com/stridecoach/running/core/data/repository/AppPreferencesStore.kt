@@ -17,7 +17,9 @@ data class CoachPreferences(
     val keepScreenAwake: Boolean = false,
     val autoPauseEnabled: Boolean = true,
     val autoFinishStopSeconds: Int = 180,
-    val stepLengthCm: Int = 74
+    val stepLengthCm: Int = 74,
+    val healthConnectEnabled: Boolean = false,
+    val autoDetectRunsEnabled: Boolean = true
 )
 
 class AppPreferencesStore(private val ctx: Context) {
@@ -27,6 +29,8 @@ class AppPreferencesStore(private val ctx: Context) {
     private val kP = booleanPreferencesKey("p")
     private val kS = intPreferencesKey("s")
     private val kL = intPreferencesKey("l")
+    private val kHc = booleanPreferencesKey("hc")
+    private val kAd = booleanPreferencesKey("ad")
 
     val preferences: Flow<CoachPreferences> = ctx.prefsStore.data.map(::read)
 
@@ -41,16 +45,21 @@ class AppPreferencesStore(private val ctx: Context) {
             map[kP] = nxt.autoPauseEnabled
             map[kS] = nxt.autoFinishStopSeconds.coerceIn(30, 900)
             map[kL] = nxt.stepLengthCm.coerceIn(40, 120)
+            map[kHc] = nxt.healthConnectEnabled
+            map[kAd] = nxt.autoDetectRunsEnabled
         }
     }
 
     private fun read(p: Preferences): CoachPreferences {
-        val v = p[kV] ?: true
-        val h = p[kH] ?: true
-        val w = p[kW] ?: false
-        val ap = p[kP] ?: true
-        val s = p[kS] ?: 180
-        val l = p[kL] ?: 74
-        return CoachPreferences(v, h, w, ap, s, l)
+        return CoachPreferences(
+            voiceCoachEnabled = p[kV] ?: true,
+            hapticCuesEnabled = p[kH] ?: true,
+            keepScreenAwake = p[kW] ?: false,
+            autoPauseEnabled = p[kP] ?: true,
+            autoFinishStopSeconds = p[kS] ?: 180,
+            stepLengthCm = p[kL] ?: 74,
+            healthConnectEnabled = p[kHc] ?: false,
+            autoDetectRunsEnabled = p[kAd] ?: true
+        )
     }
 }
