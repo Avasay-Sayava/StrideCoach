@@ -23,9 +23,10 @@ import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.data.repository.CoachPreferences
 import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.StrideCard
+import com.stridecoach.running.ui.theme.KdeMuted
+import com.stridecoach.running.ui.theme.KdePurple
+import com.stridecoach.running.ui.theme.PaceOnTarget
 import com.stridecoach.running.ui.theme.PaceTooFast
-import com.stridecoach.running.ui.theme.RunGreen
-import com.stridecoach.running.ui.theme.RunMuted
 
 @Composable
 fun DataSettingsScreen(
@@ -67,10 +68,10 @@ private fun DataPortabilityCard(
     StrideCard {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Lossless Data Import & Export", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            StatusPill("$runs runs • $walkDays walks", RunGreen)
+            StatusPill("$runs runs • $walkDays walks", KdePurple)
         }
-        if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = RunGreen)
-        if (!summary.isNullOrBlank()) Text(summary, style = MaterialTheme.typography.bodySmall, color = RunGreen)
+        if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = KdePurple)
+        if (!summary.isNullOrBlank()) Text(summary, style = MaterialTheme.typography.bodySmall, color = PaceOnTarget)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onImpBackup, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Import .backup") }
             OutlinedButton(onClick = onExpBackup, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("Export .backup") }
@@ -85,9 +86,9 @@ private fun BatteryProtectionCard(unrestricted: Boolean, onRequest: () -> Unit) 
     StrideCard {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Samsung Battery Guard", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            StatusPill(if (unrestricted) "Safe" else "Action Needed", if (unrestricted) RunGreen else PaceTooFast)
+            StatusPill(if (unrestricted) "Safe" else "Action Needed", if (unrestricted) PaceOnTarget else PaceTooFast)
         }
-        Text(msg, style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text(msg, style = MaterialTheme.typography.bodySmall, color = KdeMuted)
         if (!unrestricted) {
             Button(onClick = onRequest, shape = RoundedCornerShape(999.dp)) { Text("Allow Unrestricted Battery") }
         }
@@ -98,8 +99,8 @@ private fun BatteryProtectionCard(unrestricted: Boolean, onRequest: () -> Unit) 
 private fun ImportGuideCard() {
     StrideCard {
         Text("How to Import Your Existing Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text("1. Running Tracker (Play Store): Settings → Backup/Export → save .backup, then tap Import .backup.", style = MaterialTheme.typography.bodySmall, color = RunMuted)
-        Text("2. Google Maps Timeline: Settings → Location → Timeline → Export Timeline data (Timeline.json).", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text("1. Running Tracker (Play Store): Settings → Backup/Export → save .backup, then tap Import .backup.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
+        Text("2. Google Maps Timeline: Settings → Location → Timeline → Export Timeline data (Timeline.json).", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
     }
 }
 

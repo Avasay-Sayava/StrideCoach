@@ -5,27 +5,31 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-val RunBlack = Color(0xFF080707)
-val RunNavBg = Color(0xFF0F1210)
-val RunCardBg = Color(0xFF161917)
-val RunBorder = Color(0xFF2A2F2C)
-val RunMuted = Color(0xFF8E9A93)
-val RunGreen = Color(0xFF00F15E)
-val PaceOnTarget = Color(0xFF00F15E)
-val PaceTooFast = Color(0xFFF59E0B)
-val PaceTooSlow = Color(0xFFEF4444)
-val WalkLoadAccent = Color(0xFF38BDF8)
+val KdeBg = Color(0xFF141618)
+val KdeBgDeep = Color(0xFF1A1822)
+val KdeNavBg = Color(0xFF202326)
+val KdeCardBg = Color(0xFF23262A)
+val KdeCardAlt = Color(0xFF292C30)
+val KdeBorder = Color(0xFF383D43)
+val KdeMuted = Color(0xFF9BA3AC)
+val KdePurple = Color(0xFF926EE4)
+val KdePurpleSoft = Color(0xFF6C53A6)
+val KdeSky = Color(0xFF3DAEE9)
+val KdeText = Color(0xFFFCFCFC)
+val PaceOnTarget = Color(0xFF4ADE80)
+val PaceTooFast = Color(0xFFFBBF24)
+val PaceTooSlow = Color(0xFFF87171)
 
-private val DarkPalette = darkColorScheme(
-    primary = RunGreen, onPrimary = Color(0xFF04210E),
-    secondary = WalkLoadAccent, onSecondary = Color(0xFF031D2B),
-    tertiary = PaceTooFast, background = RunBlack,
-    surface = RunCardBg, surfaceVariant = Color(0xFF202522),
-    onBackground = Color(0xFFFAFAFA), onSurface = Color(0xFFFAFAFA),
-    onSurfaceVariant = RunMuted, outline = RunBorder
+private val KdePalette = darkColorScheme(
+    primary = KdePurple, onPrimary = Color(0xFFFFFFFF),
+    secondary = KdeSky, onSecondary = Color(0xFF061B29),
+    tertiary = PaceTooFast, background = KdeBg,
+    surface = KdeCardBg, surfaceVariant = KdeCardAlt,
+    onBackground = KdeText, onSurface = KdeText,
+    onSurfaceVariant = KdeMuted, outline = KdeBorder
 )
 
 @Composable
 fun StrideCoachTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = DarkPalette, content = content)
+    MaterialTheme(colorScheme = KdePalette, content = content)
 }

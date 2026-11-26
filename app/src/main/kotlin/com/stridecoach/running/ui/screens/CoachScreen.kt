@@ -36,10 +36,10 @@ import com.stridecoach.running.core.domain.model.formatPace
 import com.stridecoach.running.ui.CoachUiState
 import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.StrideCard
+import com.stridecoach.running.ui.theme.KdeMuted
+import com.stridecoach.running.ui.theme.KdePurple
+import com.stridecoach.running.ui.theme.KdeSky
 import com.stridecoach.running.ui.theme.PaceTooFast
-import com.stridecoach.running.ui.theme.RunGreen
-import com.stridecoach.running.ui.theme.RunMuted
-import com.stridecoach.running.ui.theme.WalkLoadAccent
 import java.time.LocalDate
 
 @Composable
@@ -79,13 +79,13 @@ private fun PlanHeroCard(plan: TrainingPlanConfig) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(plan.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            StatusPill("${formatPace(plan.targetPaceSecPerKm)} /km", RunGreen)
+            StatusPill("${formatPace(plan.targetPaceSecPerKm)} /km", KdePurple)
         }
-        Text("$left days to race day", style = MaterialTheme.typography.headlineSmall, color = RunGreen, fontWeight = FontWeight.Bold)
+        Text("$left days to race day", style = MaterialTheme.typography.headlineSmall, color = KdePurple, fontWeight = FontWeight.Bold)
         LinearProgressIndicator(
             progress = { pct },
             modifier = Modifier.fillMaxWidth().height(6.dp),
-            color = RunGreen
+            color = KdePurple
         )
     }
 }
@@ -101,7 +101,7 @@ private fun WalkAlertCard(alert: WalkingLoadAlert, onDowngrade: () -> Unit, onSw
             Text("Heavy Walking Load", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             StatusPill("$km km ${alert.triggerDayLabel}", PaceTooFast)
         }
-        Text("Protect fresh legs before today's fast session:", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text("Protect fresh legs before today's fast session:", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onDowngrade, shape = RoundedCornerShape(999.dp)) { Text("Downgrade Easy") }
             if (alert.canSwapWithTomorrow) {
@@ -115,13 +115,13 @@ private fun WalkAlertCard(alert: WalkingLoadAlert, onDowngrade: () -> Unit, onSw
 private fun TodayWorkoutCard(today: PlannedDay?, onStart: (StructuredWorkout?, String?) -> Unit) {
     StrideCard {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Today's Session", style = MaterialTheme.typography.labelLarge, color = RunMuted)
-            StatusPill(today?.dayRole?.label ?: "Free Run", WalkLoadAccent)
+            Text("Today's Session", style = MaterialTheme.typography.labelLarge, color = KdeMuted)
+            StatusPill(today?.dayRole?.label ?: "Free Run", KdeSky)
         }
         val w = today?.workout
         if (w == null) {
             Text("Rest & Recover", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text("Keep walking light and hydrate.", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+            Text("Keep walking light and hydrate.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
             OutlinedButton(onClick = { onStart(null, null) }, shape = RoundedCornerShape(999.dp)) {
                 Text("Start Free Run")
             }
@@ -135,11 +135,11 @@ private fun TodayWorkoutCard(today: PlannedDay?, onStart: (StructuredWorkout?, S
 @Composable
 private fun WorkoutPreviewBody(w: StructuredWorkout, dayId: String, onStart: (StructuredWorkout?, String?) -> Unit) {
     Text(w.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-    if (w.description.isNotBlank()) Text(w.description, style = MaterialTheme.typography.bodySmall, color = RunMuted)
+    if (w.description.isNotBlank()) Text(w.description, style = MaterialTheme.typography.bodySmall, color = KdeMuted)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         w.flattenSteps().take(5).forEach { s ->
             val pace = s.step.paceBounds?.formatRange() ?: "Easy"
-            StatusPill("${s.displayName()} • $pace", RunGreen)
+            StatusPill("${s.displayName()} • $pace", KdePurple)
         }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -163,7 +163,7 @@ private fun RaceModeCard(race: PlannedDay, onStart: (StructuredWorkout?, String?
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Race-Day Pacer Mode", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("3-phase pacing + live finish projection", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+                Text("3-phase pacing + live finish projection", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
             }
             Button(onClick = { onStart(w, race.id) }, shape = RoundedCornerShape(999.dp)) { Text("Launch") }
         }

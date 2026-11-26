@@ -1,15 +1,14 @@
 package com.stridecoach.running.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -22,24 +21,23 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.domain.model.TrackPoint
 import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.core.domain.model.formatPace
-import com.stridecoach.running.ui.components.SmoothPolylineCanvas
-import com.stridecoach.running.ui.theme.RunMuted
+import com.stridecoach.running.ui.components.OsmRouteMap
+import com.stridecoach.running.ui.theme.KdeMuted
+import com.stridecoach.running.ui.theme.KdePurple
 import kotlinx.coroutines.delay
 
 @Composable
 fun RunReplayPlayer(
     points: List<TrackPoint>,
-    targetPaceSecPerKm: Int,
     modifier: Modifier = Modifier
 ) {
     if (points.size < 2) {
-        Text("No GPS track available for replay.", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text("No GPS track available for replay.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
         return
     }
     val totalMs = points.last().elapsedMillis.coerceAtLeast(1_000L)
@@ -66,18 +64,13 @@ fun RunReplayPlayer(
     val pace = pt.speedMps?.takeIf { it > 0.4f }?.let { (1000f / it).toInt() } ?: 0
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Animated Route Replay", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        SmoothPolylineCanvas(
+        Text("Animated Map Replay", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        OsmRouteMap(
             pts = points,
-            targetPaceSec = targetPaceSecPerKm,
             endIdx = idx,
-            strokePx = 9f,
+            interactive = true,
             showHead = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(210.dp)
-                .background(Color(0xFF0C0F0D), RoundedCornerShape(12.dp))
-                .padding(10.dp)
+            modifier = Modifier.fillMaxWidth().height(230.dp)
         )
         ReplayMetricsRow(curMs, pt.cumulativeDistanceMeters, pace)
         Slider(value = prog, onValueChange = { playing = false; prog = it })
@@ -99,12 +92,16 @@ private fun ReplayMetricsRow(ms: Long, distM: Double, pace: Int) {
 
 @Composable
 private fun ReplayControlsRow(playing: Boolean, mult: Int, onToggle: () -> Unit, onMult: (Int) -> Unit) {
+    val cc = FilterChipDefaults.filterChipColors(
+        selectedContainerColor = KdePurple.copy(alpha = 0.22f),
+        selectedLabelColor = KdePurple
+    )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = onToggle, shape = RoundedCornerShape(999.dp)) {
             Text(if (playing) "Pause" else "Play")
         }
         listOf(1, 4, 10, 25).forEach { m ->
-            FilterChip(selected = mult == m, onClick = { onMult(m) }, label = { Text("${m}x") })
+            FilterChip(selected = mult == m, onClick = { onMult(m) }, colors = cc, label = { Text("${m}x") })
         }
     }
 }

@@ -1,7 +1,6 @@
 package com.stridecoach.running.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,14 +37,15 @@ import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.core.domain.model.formatPace
 import com.stridecoach.running.core.tracking.LiveTrackingState
 import com.stridecoach.running.core.tracking.MovementState
-import com.stridecoach.running.ui.components.SmoothPolylineCanvas
+import com.stridecoach.running.ui.components.OsmRouteMap
 import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.StrideCard
+import com.stridecoach.running.ui.theme.KdeMuted
+import com.stridecoach.running.ui.theme.KdePurple
+import com.stridecoach.running.ui.theme.KdeText
 import com.stridecoach.running.ui.theme.PaceOnTarget
 import com.stridecoach.running.ui.theme.PaceTooFast
 import com.stridecoach.running.ui.theme.PaceTooSlow
-import com.stridecoach.running.ui.theme.RunGreen
-import com.stridecoach.running.ui.theme.RunMuted
 
 @Composable
 fun LiveRunScreen(
@@ -66,10 +66,11 @@ fun LiveRunScreen(
         Text("Live Run", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         if (!st.isActive) {
             IdleRunCard(onStartFreeRun)
+            LiveMapPreviewCard(st, Modifier.weight(1f))
             return
         }
         LiveHudCard(st)
-        LiveRouteBox(st, Modifier.weight(1f))
+        LiveMapPreviewCard(st, Modifier.weight(1f))
         if (st.isPaused) PauseConfirmCard(locked, onPauseResume, onStopRun)
         SafetyToggles(keepScreenAwake, locked, onToggleWakeLock) { locked = it }
         BottomControlsBar(st.isPaused, locked, onPauseResume, onNextStep)
@@ -79,11 +80,11 @@ fun LiveRunScreen(
 @Composable
 private fun IdleRunCard(onStart: () -> Unit) {
     StrideCard {
-        Text("Ready to Run", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("Ready to Run", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text(
             "Launch a guided workout from Coach or start an open GPS run. Lock-screen controls remain active in notifications.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = RunMuted
+            style = MaterialTheme.typography.bodySmall,
+            color = KdeMuted
         )
         Button(
             onClick = onStart,
@@ -107,7 +108,7 @@ private fun LiveHudCard(st: LiveTrackingState) {
         PaceStatus.ON_TARGET -> PaceOnTarget
         PaceStatus.TOO_FAST -> PaceTooFast
         PaceStatus.TOO_SLOW -> PaceTooSlow
-        PaceStatus.NO_SIGNAL -> RunMuted
+        PaceStatus.NO_SIGNAL -> KdePurple
     }
     StrideCard(borderColor = sc.copy(alpha = 0.65f)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -121,7 +122,7 @@ private fun LiveHudCard(st: LiveTrackingState) {
         )
         HudMetricsRow(st, sc)
         sn?.projectedFinishMillis?.let { p ->
-            Text("Projected Finish: ${formatDuration(p)}", style = MaterialTheme.typography.labelLarge, color = RunGreen)
+            Text("Projected Finish: ${formatDuration(p)}", style = MaterialTheme.typography.labelLarge, color = KdePurple)
         }
     }
 }
@@ -145,29 +146,23 @@ private fun HudMetricsRow(st: LiveTrackingState, sc: Color) {
 }
 
 @Composable
-private fun HudMetricCol(label: String, value: String, color: Color = Color(0xFFFAFAFA)) {
+private fun HudMetricCol(label: String, value: String, color: Color = KdeText) {
     Column {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = RunMuted)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = KdeMuted)
         Text(value, style = MaterialTheme.typography.titleMedium, color = color, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
-private fun LiveRouteBox(st: LiveTrackingState, modifier: Modifier) {
+private fun LiveMapPreviewCard(st: LiveTrackingState, modifier: Modifier) {
     StrideCard(modifier = modifier) {
-        Text("Live Pace Trail", style = MaterialTheme.typography.labelMedium, color = RunMuted)
-        Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
-            if (st.trackPoints.size >= 2) {
-                SmoothPolylineCanvas(
-                    pts = st.trackPoints,
-                    targetPaceSec = st.snapshot?.activeStep?.step?.paceBounds?.midpointSecPerKm() ?: 300,
-                    modifier = Modifier.fillMaxSize(),
-                    showHead = true
-                )
-            } else {
-                Text("Acquiring GPS signal...", style = MaterialTheme.typography.bodyMedium, color = RunMuted)
-            }
-        }
+        Text("Live Street Map", style = MaterialTheme.typography.labelMedium, color = KdeMuted)
+        OsmRouteMap(
+            pts = st.trackPoints,
+            interactive = true,
+            showHead = st.trackPoints.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth().weight(1f)
+        )
     }
 }
 
@@ -175,7 +170,7 @@ private fun LiveRouteBox(st: LiveTrackingState, modifier: Modifier) {
 private fun PauseConfirmCard(locked: Boolean, onResume: () -> Unit, onStop: () -> Unit) {
     StrideCard(borderColor = PaceTooFast.copy(alpha = 0.6f)) {
         Text("Run is paused", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text("Resume your workout or finish and save.", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text("Resume your workout or finish and save.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(
                 onClick = onStop,
@@ -197,9 +192,9 @@ private fun PauseConfirmCard(locked: Boolean, onResume: () -> Unit, onStop: () -
 @Composable
 private fun SafetyToggles(wake: Boolean, locked: Boolean, onWake: (Boolean) -> Unit, onLock: (Boolean) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text("WakeLock", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text("WakeLock", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
         Switch(checked = wake, onCheckedChange = onWake)
-        Text("Pocket Lock", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text("Pocket Lock", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
         Switch(checked = locked, onCheckedChange = onLock)
     }
 }
@@ -214,8 +209,8 @@ private fun BottomControlsBar(paused: Boolean, locked: Boolean, onPause: () -> U
         FloatingActionButton(
             onClick = { if (!locked) onPause() },
             shape = CircleShape,
-            containerColor = if (locked) RunMuted else RunGreen,
-            contentColor = Color(0xFF04210E),
+            containerColor = if (locked) KdeMuted else KdePurple,
+            contentColor = Color.White,
             modifier = Modifier.size(68.dp)
         ) {
             Icon(if (paused) Icons.Default.PlayArrow else Icons.Default.Pause, contentDescription = "Pause or Resume", modifier = Modifier.size(34.dp))

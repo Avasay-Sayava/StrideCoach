@@ -45,15 +45,15 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.stridecoach.running.core.tracking.RunTrackingService
 import com.stridecoach.running.ui.StrideCoachViewModel
-import com.stridecoach.running.ui.components.StrideGlowBackground
+import com.stridecoach.running.ui.components.KdeAppBackground
 import com.stridecoach.running.ui.screens.CoachScreen
 import com.stridecoach.running.ui.screens.DataSettingsScreen
 import com.stridecoach.running.ui.screens.HistoryAnalyticsScreen
 import com.stridecoach.running.ui.screens.LiveRunScreen
 import com.stridecoach.running.ui.screens.PlanBuilderScreen
-import com.stridecoach.running.ui.theme.RunGreen
-import com.stridecoach.running.ui.theme.RunMuted
-import com.stridecoach.running.ui.theme.RunNavBg
+import com.stridecoach.running.ui.theme.KdeMuted
+import com.stridecoach.running.ui.theme.KdeNavBg
+import com.stridecoach.running.ui.theme.KdePurple
 import com.stridecoach.running.ui.theme.StrideCoachTheme
 
 class MainActivity : ComponentActivity() {
@@ -126,7 +126,7 @@ private fun AppShell(vm: StrideCoachViewModel) {
     }
 
     val io = rememberIoHooks(vm)
-    StrideGlowBackground {
+    KdeAppBackground {
         Scaffold(
             containerColor = Color.Transparent,
             snackbarHost = { SnackbarHost(host) },
@@ -189,7 +189,7 @@ private fun AppBottomBar(tab: Int, onPick: (Int) -> Unit) {
         "History" to Icons.Default.History,
         "Data" to Icons.Default.Settings
     )
-    NavigationBar(containerColor = RunNavBg) {
+    NavigationBar(containerColor = KdeNavBg) {
         items.forEachIndexed { idx, (lbl, icon) ->
             NavigationBarItem(
                 selected = tab == idx,
@@ -197,11 +197,11 @@ private fun AppBottomBar(tab: Int, onPick: (Int) -> Unit) {
                 icon = { Icon(icon, contentDescription = lbl) },
                 label = { Text(lbl) },
                 colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = RunGreen,
-                    selectedTextColor = RunGreen,
-                    indicatorColor = RunGreen.copy(alpha = 0.16f),
-                    unselectedIconColor = RunMuted,
-                    unselectedTextColor = RunMuted
+                    selectedIconColor = KdePurple,
+                    selectedTextColor = KdePurple,
+                    indicatorColor = KdePurple.copy(alpha = 0.18f),
+                    unselectedIconColor = KdeMuted,
+                    unselectedTextColor = KdeMuted
                 )
             )
         }

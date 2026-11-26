@@ -17,9 +17,9 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,10 +45,10 @@ import com.stridecoach.running.core.domain.model.WorkoutSegment
 import com.stridecoach.running.ui.CoachUiState
 import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.StrideCard
+import com.stridecoach.running.ui.theme.KdeMuted
+import com.stridecoach.running.ui.theme.KdePurple
+import com.stridecoach.running.ui.theme.KdeSky
 import com.stridecoach.running.ui.theme.PaceTooFast
-import com.stridecoach.running.ui.theme.RunGreen
-import com.stridecoach.running.ui.theme.RunMuted
-import com.stridecoach.running.ui.theme.WalkLoadAccent
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.util.UUID
@@ -77,8 +77,8 @@ fun PlanBuilderScreen(
                     onClick = { subTab = idx },
                     shape = SegmentedButtonDefaults.itemShape(idx, labels.size),
                     colors = SegmentedButtonDefaults.colors(
-                        activeContainerColor = RunGreen.copy(alpha = 0.20f),
-                        activeContentColor = RunGreen
+                        activeContainerColor = KdePurple.copy(alpha = 0.22f),
+                        activeContentColor = KdePurple
                     )
                 ) { Text(lbl) }
             }
@@ -97,12 +97,12 @@ fun PlanBuilderScreen(
 @Composable
 private fun ScheduleList(planName: String?, days: List<PlannedDay>, onRun: (StructuredWorkout) -> Unit) {
     if (days.isEmpty()) {
-        StrideCard { Text("No plan active. Open Plan Builder to generate one.", color = RunMuted) }
+        StrideCard { Text("No plan active. Open Plan Builder to generate one.", color = KdeMuted) }
         return
     }
     StrideCard {
         Text(planName ?: "Active Schedule", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text("${days.size} scheduled days • Showing upcoming weeks", style = MaterialTheme.typography.bodySmall, color = RunMuted)
+        Text("${days.size} scheduled days • Showing upcoming weeks", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
     }
     val byWeek = days.groupBy { it.weekNumber }.entries.take(6)
     byWeek.forEach { (wk, list) -> WeekCard(wk, list, onRun) }
@@ -119,7 +119,7 @@ private fun WeekCard(wk: Int, days: List<PlannedDay>, onRun: (StructuredWorkout)
     StrideCard {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Week $wk", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            StatusPill(tag, if (tag == "Build") RunGreen else WalkLoadAccent)
+            StatusPill(tag, if (tag == "Build") KdePurple else KdeSky)
         }
         days.forEach { d -> DayRow(d, onRun) }
     }
@@ -129,10 +129,10 @@ private fun WeekCard(wk: Int, days: List<PlannedDay>, onRun: (StructuredWorkout)
 private fun DayRow(d: PlannedDay, onRun: (StructuredWorkout) -> Unit) {
     val dt = LocalDate.ofEpochDay(d.dateEpochDay)
     val c = when (d.dayRole) {
-        DayRole.LONG_RUN, DayRole.RACE_DAY -> RunGreen
+        DayRole.LONG_RUN, DayRole.RACE_DAY -> KdePurple
         DayRole.FAST_WORKOUT -> PaceTooFast
-        DayRole.EASY_RUN -> WalkLoadAccent
-        else -> RunMuted
+        DayRole.EASY_RUN -> KdeSky
+        else -> KdeMuted
     }
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
@@ -140,7 +140,7 @@ private fun DayRow(d: PlannedDay, onRun: (StructuredWorkout) -> Unit) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text("${dt.dayOfWeek.name.take(3)} $dt", style = MaterialTheme.typography.labelSmall, color = RunMuted)
+            Text("${dt.dayOfWeek.name.take(3)} $dt", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
             Text(d.workout?.title ?: d.dayRole.label, style = MaterialTheme.typography.bodyMedium)
         }
         val w = d.workout
@@ -169,7 +169,7 @@ private fun PlanCreatorCard(onActivate: (TrainingPlanConfig) -> Unit) {
         GoalChipsRow(goal) { goal = it }
         TwoFieldRow("Weeks", weeks, { weeks = it }, "Goal sec/km", pace) { pace = it }
         ThreeFieldRow("Start km", startKm, { startKm = it }, "Peak km", peakKm, { peakKm = it }, "Walk km", walkCap) { walkCap = it }
-        Text("Weekly Day Roles (tap to cycle)", style = MaterialTheme.typography.labelLarge, color = RunMuted)
+        Text("Weekly Day Roles (tap to cycle)", style = MaterialTheme.typography.labelLarge, color = KdeMuted)
         WeekdayRoleChips(roles) { roles = it }
         PlanActionButtons(
             onCreate = { onActivate(buildCustomConfig(name, goal, weeks, pace, startKm, peakKm, walkCap, roles)) },
@@ -182,8 +182,8 @@ private fun PlanCreatorCard(onActivate: (TrainingPlanConfig) -> Unit) {
 @Composable
 private fun GoalChipsRow(sel: GoalDistance, onPick: (GoalDistance) -> Unit) {
     val cc = FilterChipDefaults.filterChipColors(
-        selectedContainerColor = RunGreen.copy(alpha = 0.20f),
-        selectedLabelColor = RunGreen
+        selectedContainerColor = KdePurple.copy(alpha = 0.22f),
+        selectedLabelColor = KdePurple
     )
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         GoalDistance.entries.forEach { d ->
@@ -197,8 +197,8 @@ private fun GoalChipsRow(sel: GoalDistance, onPick: (GoalDistance) -> Unit) {
 private fun WeekdayRoleChips(roles: Map<DayOfWeek, DayRole>, onChange: (Map<DayOfWeek, DayRole>) -> Unit) {
     val cycle = listOf(DayRole.LONG_RUN, DayRole.FAST_WORKOUT, DayRole.EASY_RUN, DayRole.FULL_REST, DayRole.WALK_ONLY, DayRole.CROSS_TRAIN)
     val cc = FilterChipDefaults.filterChipColors(
-        selectedContainerColor = RunGreen.copy(alpha = 0.20f),
-        selectedLabelColor = RunGreen
+        selectedContainerColor = KdePurple.copy(alpha = 0.22f),
+        selectedLabelColor = KdePurple
     )
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         DayOfWeek.entries.forEach { dow ->
