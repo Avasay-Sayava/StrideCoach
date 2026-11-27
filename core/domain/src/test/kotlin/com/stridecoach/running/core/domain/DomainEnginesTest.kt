@@ -297,4 +297,14 @@ class DomainEnginesTest {
         assertTrue(head.currentKm >= 1)
         assertEquals(raw[4].latitude + 0.0001, head.lat, 0.00005)
     }
+
+    @Test
+    fun prHistoryRejectsImpossibleGlitchedPaceRecords() {
+        val corrupt = RunRecord("bad", 1_000L, 24_000, 1_800_000L, 75, 500, "Double Distance Glitch", "", "", emptyList())
+        val real = RunRecord("ok", 2_000L, 5_000, 1_500_000L, 300, 300, "Real 5K", "", "", emptyList())
+        val histories = RunAnalyticsEngine().computePersonalRecordHistories(listOf(corrupt, real))
+        val h2k = histories.first { it.label == "2K" }
+        assertEquals("Real 5K", h2k.currentBest.runName)
+        assertEquals(600_000L, h2k.currentBest.durationMillis)
+    }
 }

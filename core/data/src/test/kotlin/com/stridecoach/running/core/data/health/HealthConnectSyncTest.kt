@@ -1,7 +1,9 @@
 package com.stridecoach.running.core.data.health
 
+import com.stridecoach.running.core.data.adapter.GpxImporter
 import com.stridecoach.running.core.domain.engine.RunTailTrimmer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,5 +43,31 @@ class HealthConnectSyncTest {
         )
         val overlap = HealthConnectSyncManager.overlapDistanceMeters(slices, winStart, winEnd)
         assertEquals(1100.0, overlap, 0.01)
+    }
+
+    @Test
+    fun gpxImporterParsesTrackPointsAndSplits() {
+        val gpx = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <gpx version="1.1" creator="Samsung Health">
+              <trk>
+                <name>Samsung Evening Run</name>
+                <trkseg>
+                  <trkpt lat="32.1133" lon="34.8044"><ele>14.0</ele><time>2026-11-25T18:26:00Z</time></trkpt>
+                  <trkpt lat="32.1190" lon="34.8044"><ele>18.0</ele><time>2026-11-25T18:29:00Z</time></trkpt>
+                  <trkpt lat="32.1250" lon="34.8044"><ele>22.0</ele><time>2026-11-25T18:32:00Z</time></trkpt>
+                </trkseg>
+              </trk>
+            </gpx>
+        """.trimIndent()
+        assertTrue(GpxImporter.isGpxContent(gpx))
+        val rec = GpxImporter.parseGpx(gpx)
+        assertNotNull(rec)
+        assertEquals("Samsung Evening Run", rec!!.name)
+        assertEquals(3, rec.trackPoints.size)
+        assertTrue(rec.distanceMeters in 1250..1350)
+        assertEquals(360_000L, rec.durationMillis)
+        assertEquals(1, rec.splits.size)
+        assertTrue(rec.encodedPolyline.isNotBlank())
     }
 }

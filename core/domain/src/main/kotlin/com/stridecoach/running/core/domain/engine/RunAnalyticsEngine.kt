@@ -250,10 +250,11 @@ class RunAnalyticsEngine(
             for (r in chronological) {
                 if (r.distanceMeters < (meters * 0.98) || r.durationMillis <= 0L) continue
                 val projMs = ((r.durationMillis.toDouble() / r.distanceMeters) * meters).toLong()
+                val pace = ((projMs / 1000.0) / (meters / 1000.0)).toInt()
+                if (pace !in 150..1200) continue
                 if (projMs < bestMs) {
                     val gain = if (bestMs == Long.MAX_VALUE) 0L else bestMs - projMs
                     bestMs = projMs
-                    val pace = ((projMs / 1000.0) / (meters / 1000.0)).toInt()
                     breaks.add(
                         PrProgressionEntry(
                             runId = r.id,

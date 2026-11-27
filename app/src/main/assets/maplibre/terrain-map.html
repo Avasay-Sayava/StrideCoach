@@ -515,20 +515,30 @@
     if (map.getLayer('3d-buildings-tall')) map.setFilter('3d-buildings-tall', ['>=', hExpr, thresh]);
   }
 
+  function isAreaLabelLayerId(id) {
+    return /(^place_|^water_|park|city|town|village|suburb|state|country|continent|ocean|sea|lake|region|area|district|neighborhood|landuse|natural)/i.test(id || '');
+  }
+
   function reorganizeLayersForSinglePassTerrain(map) {
     var st = map.getStyle();
     var layers = st && st.layers;
     if (!layers) return;
-    var syms = [];
+    var streetSyms = [];
+    var areaSyms = [];
     for (var i = 0; i < layers.length; i++) {
       var id = layers[i].id;
-      if (layers[i].type === 'symbol') syms.push(id);
-      else if (layers[i].type === 'fill-extrusion' && id !== '3d-buildings-low' && id !== '3d-buildings-tall') {
+      if (layers[i].type === 'symbol') {
+        if (isAreaLabelLayerId(id)) areaSyms.push(id);
+        else streetSyms.push(id);
+      } else if (layers[i].type === 'fill-extrusion' && id !== '3d-buildings-low' && id !== '3d-buildings-tall') {
         map.setLayoutProperty(id, 'visibility', 'none');
       }
     }
-    for (var j = 0; j < syms.length; j++) {
-      if (map.getLayer(syms[j])) map.moveLayer(syms[j]);
+    for (var j = 0; j < streetSyms.length; j++) {
+      if (map.getLayer(streetSyms[j])) map.moveLayer(streetSyms[j]);
+    }
+    for (var k = 0; k < areaSyms.length; k++) {
+      if (map.getLayer(areaSyms[k])) map.moveLayer(areaSyms[k]);
     }
   }
 
@@ -537,7 +547,17 @@
     var layers = st && st.layers;
     if (!layers) return undefined;
     for (var i = 0; i < layers.length; i++) {
-      if (layers[i].type === 'symbol') return layers[i].id;
+      if (layers[i].type === 'symbol' && !isAreaLabelLayerId(layers[i].id)) return layers[i].id;
+    }
+    return undefined;
+  }
+
+  function findFirstAreaSymbolId(map) {
+    var st = map.getStyle();
+    var layers = st && st.layers;
+    if (!layers) return undefined;
+    for (var i = 0; i < layers.length; i++) {
+      if (layers[i].type === 'symbol' && isAreaLabelLayerId(layers[i].id)) return layers[i].id;
     }
     return undefined;
   }
@@ -562,7 +582,8 @@
     }
 
     reorganizeLayersForSinglePassTerrain(map);
-    var firstSym = findFirstSymbolId(map);
+    var firstSym = findFirstSymbolId(map) || findFirstAreaSymbolId(map);
+    var firstAreaSym = findFirstAreaSymbolId(map);
     var hsBefore = map.getLayer('building') ? 'building' : (map.getLayer('water_name') ? 'water_name' : firstSym);
     if (!map.getLayer('terrain-hillshade-layer')) {
       var hsDef = { id: 'terrain-hillshade-layer', type: 'hillshade', source: 'terrain-dem', paint: { 'hillshade-exaggeration': 0.34 } };
@@ -599,7 +620,7 @@
 
     state.headLayer = createHead3dLayer('core');
     if (!map.getLayer('sc-head-core-3d')) {
-      if (firstSym) map.addLayer(state.headLayer, firstSym); else map.addLayer(state.headLayer);
+      if (firstAreaSym) map.addLayer(state.headLayer, firstAreaSym); else map.addLayer(state.headLayer);
     }
 
     if (map.getSource('openmaptiles') && !map.getLayer('3d-buildings-tall')) {
@@ -617,13 +638,13 @@
           'fill-extrusion-opacity': 1.0
         }
       };
-      if (firstSym) map.addLayer(tallDef, firstSym); else map.addLayer(tallDef);
+      if (firstAreaSym) map.addLayer(tallDef, firstAreaSym); else map.addLayer(tallDef);
     }
 
     installMarkerLayers(map);
     var haloLayer = createHead3dLayer('halo');
     if (!map.getLayer('sc-head-halo-3d')) {
-      map.addLayer(haloLayer);
+      if (firstAreaSym) map.addLayer(haloLayer, firstAreaSym); else map.addLayer(haloLayer);
     }
   }
 
@@ -741,7 +762,9 @@
     var dy = Math.max(1e-6, mercY(minLat) - mercY(maxLat));
     var availW = Math.max(60, w - padS * 2);
     var availH = Math.max(60, h - padT - padB);
-    var zoom = Math.max(1.0, Math.min(Math.log2(availW / (512.0 * dx)), Math.log2(availH / (512.0 * dy)), 16.0)) - (pitchDeg > 5 ? 0.35 : 0.0);
+    var pitchCos = pitchDeg > 5 ? Math.cos(pitchDeg * Math.PI / 180.0) : 1.0;
+    var effDy = dy * Math.max(0.74, pitchCos * 1.12);
+    var zoom = Math.max(1.0, Math.min(Math.log2(availW / (512.0 * dx)), Math.log2(availH / (512.0 * effDy)), 16.2));
     return {
       center: [(minLon + maxLon) / 2.0, invMercY((mercY(minLat) + mercY(maxLat)) / 2.0)],
       zoom: zoom,
@@ -978,7 +1001,7 @@
       safeTop = Math.max(12, Math.round(safeTop * sc));
       safeBot = Math.max(12, Math.round(safeBot * sc));
     }
-    var safeSide = Math.min(Math.max(12, Math.round(f.fitSideCss)), Math.round(el.clientWidth * 0.22));
+    var safeSide = Math.min(Math.max(12, Math.round(f.fitSideCss * 0.60)), Math.round(el.clientWidth * 0.14));
     var topPad = Math.min(Math.max(0, Math.round(f.topCss)), Math.round(el.clientHeight * 0.42));
     var botPad = Math.min(Math.max(0, Math.round(f.botCss)), Math.round(el.clientHeight * 0.44));
 

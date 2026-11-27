@@ -83,7 +83,8 @@ class StrideCoachRepository(
         val pts = db.runDao().getTrackPoints(m.run.id)
         val canUpgradeRoute = pts.size <= 2 && rec.trackPoints.size > 2
         val canUpgradeDist = m.run.source == RunSource.HEALTH_CONNECT.name &&
-            m.run.distanceMeters == 0 && rec.distanceMeters > 0
+            rec.distanceMeters > 0 &&
+            (m.run.distanceMeters == 0 || abs(rec.distanceMeters - m.run.distanceMeters) >= 50)
         if (!canUpgradeRoute && !canUpgradeDist) return false
         val base = m.run.toDomain(m.splits.map { it.toDomain() }, pts.map { it.toDomain() })
         val upgraded = if (canUpgradeRoute) {

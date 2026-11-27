@@ -9,6 +9,7 @@ import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import com.stridecoach.running.core.data.repository.StrideCoachRepository
@@ -36,7 +37,14 @@ data class HealthSyncResult(
     val addedCycles: Int = 0,
     val addedOther: Int = 0,
     val routesLoaded: Int = 0,
+    val noRouteSessions: Int = 0,
     val pendingRouteSessionIds: List<String> = emptyList()
+)
+
+private data class ActivityBatch(
+    val records: List<RunRecord>,
+    val pendingRouteIds: List<String>,
+    val noRouteCount: Int
 )
 
 internal data class DistanceSlice(
@@ -89,15 +97,24 @@ object HealthConnectSyncManager {
         if (walks.isNotEmpty()) repo.mergeWalkLogs(walks)
 
         val actBatch = readActivities(client, granted, distSlices, start, end)
-        val activities = actBatch.first
-        val pendingIds = actBatch.second
+        val activities = actBatch.records
+        val pendingIds = actBatch.pendingRouteIds
         val routesLoaded = activities.count { it.trackPoints.size >= 2 }
         val addedTotal = if (activities.isNotEmpty()) repo.saveRunsDeduplicated(activities) else 0
         val runsCnt = if (addedTotal > 0) activities.count { it.activityKind == ActivityKind.RUNNING } else 0
         val walkCnt = if (addedTotal > 0) activities.count { it.activityKind == ActivityKind.WALKING } else 0
         val cycCnt = if (addedTotal > 0) activities.count { it.activityKind == ActivityKind.CYCLING } else 0
         val othCnt = if (addedTotal > 0) activities.count { it.activityKind == ActivityKind.HIKING || it.activityKind == ActivityKind.OTHER } else 0
-        return HealthSyncResult(walks.size, addedTotal, walkCnt, cycCnt, othCnt, routesLoaded, pendingIds)
+        return HealthSyncResult(
+            syncedWalkDays = walks.size,
+            addedRuns = addedTotal,
+            addedWalks = walkCnt,
+            addedCycles = cycCnt,
+            addedOther = othCnt,
+            routesLoaded = routesLoaded,
+            noRouteSessions = actBatch.noRouteCount,
+            pendingRouteSessionIds = pendingIds
+        )
     }
 
     suspend fun applyConsentedRoute(
@@ -112,12 +129,28 @@ object HealthConnectSyncManager {
             client.readRecord(ExerciseSessionRecord::class, sessionId).record
         }.getOrNull() ?: return false
         val kind = mapKind(session.exerciseType) ?: return false
-        val distSlices = runCatching {
-            val granted = client.permissionController.getGrantedPermissions()
-            readDistanceSlices(client, granted, session.startTime, session.endTime)
-        }.getOrDefault(emptyList())
-        val rec = toRunRecord(session, kind, distSlices, route) ?: return false
+        val granted = runCatching { client.permissionController.getGrantedPermissions() }.getOrDefault(emptySet())
+        val aggDist = readSessionDistanceMeters(client, granted, session)
+        val rec = toRunRecord(session, kind, aggDist, emptyList(), route) ?: return false
         return repo.saveRunsDeduplicated(listOf(rec)) > 0
+    }
+
+    private suspend fun readSessionDistanceMeters(
+        client: HealthConnectClient,
+        granted: Set<String>,
+        s: ExerciseSessionRecord
+    ): Int? {
+        if (HealthPermission.getReadPermission(DistanceRecord::class) !in granted) return null
+        val range = TimeRangeFilter.between(s.startTime, s.endTime)
+        val byOrigin = runCatching {
+            client.aggregate(AggregateRequest(setOf(DistanceRecord.DISTANCE_TOTAL), range, setOf(s.metadata.dataOrigin)))
+                .get(DistanceRecord.DISTANCE_TOTAL)?.inMeters?.roundToInt()
+        }.getOrNull()
+        if (byOrigin != null && byOrigin > 0) return byOrigin
+        return runCatching {
+            client.aggregate(AggregateRequest(setOf(DistanceRecord.DISTANCE_TOTAL), range))
+                .get(DistanceRecord.DISTANCE_TOTAL)?.inMeters?.roundToInt()
+        }.getOrNull()?.takeIf { it > 0 }
     }
 
     private suspend fun <T : Record> readAllRecords(
@@ -195,24 +228,28 @@ object HealthConnectSyncManager {
         distSlices: List<DistanceSlice>,
         start: Instant,
         end: Instant
-    ): Pair<List<RunRecord>, List<String>> {
+    ): ActivityBatch {
         val perm = HealthPermission.getReadPermission(ExerciseSessionRecord::class)
-        if (perm !in granted) return emptyList<RunRecord>() to emptyList()
+        if (perm !in granted) return ActivityBatch(emptyList(), emptyList(), 0)
         val sessions = runCatching {
             readAllRecords(client, ExerciseSessionRecord::class, start, end)
         }.getOrDefault(emptyList()).sortedByDescending { it.startTime }
 
         val out = mutableListOf<RunRecord>()
         val pendingRouteIds = mutableListOf<String>()
+        var noRouteCount = 0
         for (s in sessions) {
             val kind = mapKind(s.exerciseType) ?: continue
-            if (s.exerciseRouteResult is ExerciseRouteResult.ConsentRequired && s.metadata.id.isNotBlank()) {
-                pendingRouteIds.add(s.metadata.id)
+            when (s.exerciseRouteResult) {
+                is ExerciseRouteResult.ConsentRequired -> if (s.metadata.id.isNotBlank()) pendingRouteIds.add(s.metadata.id)
+                is ExerciseRouteResult.NoData -> noRouteCount++
+                is ExerciseRouteResult.Data -> Unit
             }
             val routeOverride = (s.exerciseRouteResult as? ExerciseRouteResult.Data)?.exerciseRoute
-            toRunRecord(s, kind, distSlices, routeOverride)?.let(out::add)
+            val aggDist = readSessionDistanceMeters(client, granted, s)
+            toRunRecord(s, kind, aggDist, distSlices, routeOverride)?.let(out::add)
         }
-        return out to pendingRouteIds
+        return ActivityBatch(out, pendingRouteIds, noRouteCount)
     }
 
     private fun mapKind(exerciseType: Int): ActivityKind? = when (exerciseType) {
@@ -228,6 +265,7 @@ object HealthConnectSyncManager {
     private fun toRunRecord(
         s: ExerciseSessionRecord,
         kind: ActivityKind,
+        aggregatedDistMeters: Int?,
         distSlices: List<DistanceSlice>,
         routeOverride: ExerciseRoute?
     ): RunRecord? {
@@ -244,8 +282,8 @@ object HealthConnectSyncManager {
         } ?: emptyList()
 
         val routeDist = routePts.lastOrNull()?.cumulativeDistanceMeters?.roundToInt() ?: 0
-        val overlapDist = overlapDistanceMeters(distSlices, startMs, endMs).roundToInt()
-        val dist = if (routeDist >= 50) routeDist else maxOf(routeDist, overlapDist)
+        val fallbackDist = aggregatedDistMeters ?: overlapDistanceMeters(distSlices, startMs, endMs).roundToInt()
+        val dist = if (routeDist >= 50) routeDist else fallbackDist
         val poly = EncodedPolylineCodec.encode(routePts.map { LatLon(it.latitude, it.longitude) })
         val pace = if (dist >= 100) ((durMs / 1000.0) / (dist / 1000.0)).roundToInt() else 0
         val segs = ActivitySegmentClassifier.classify(routePts)

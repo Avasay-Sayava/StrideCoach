@@ -2,7 +2,10 @@ package com.stridecoach.running.ui.screens
 
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
 import android.widget.Toast
+import androidx.health.connect.client.HealthConnectClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -726,6 +729,7 @@ private fun LockscreenProtectionCard(p: CoachPreferences, onUp: ((CoachPreferenc
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AutoCard(
     p: CoachPreferences,
@@ -758,7 +762,8 @@ private fun AutoCard(
             StatusPill(tag, if (hcOk) PaceOnTarget else KdeSky)
         }
         Text(syncLabel, style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val ctx = LocalContext.current
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (!hcOk && hcAvail) {
                 Button(onClick = onCon, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
                     Text("Connect Health", maxLines = 1, softWrap = false)
@@ -771,10 +776,25 @@ private fun AutoCard(
             OutlinedButton(onClick = onSync, enabled = hcAvail && !busy, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
                 Text("Sync Now", maxLines = 1, softWrap = false)
             }
+            if (hcAvail) {
+                OutlinedButton(
+                    onClick = { openHealthConnectSettings(ctx) },
+                    shape = RoundedCornerShape(999.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text("HC Settings", maxLines = 1, softWrap = false)
+                }
+            }
         }
         ToggleRow("Auto-Sync Health Connect (6h)", p.healthAutoSyncEnabled, onAutoSync)
         ToggleRow("Detect Runs, Walks & Rides", p.autoDetectRunsEnabled, onAutoDetect)
         ToggleRow("Auto-Start Exercise When Run Detected", p.autoStartOnRunDetected, onAutoStart)
+    }
+}
+
+private fun openHealthConnectSettings(ctx: Context) {
+    runCatching {
+        ctx.startActivity(Intent(HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }
 

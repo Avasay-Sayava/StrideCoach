@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.stridecoach.running.core.data.adapter.GpxExporter
+import com.stridecoach.running.core.data.adapter.GpxImporter
 import com.stridecoach.running.core.data.adapter.ImportFileKind
 import com.stridecoach.running.core.data.adapter.RunningTrackerBackupAdapter
 import com.stridecoach.running.core.data.adapter.TimelineJsonImporter
@@ -575,9 +576,13 @@ class StrideCoachViewModel(
             pendingHcRouteIdsFlow.value = res.pendingRouteSessionIds
             prefs.update { it.copy(lastHealthSyncMillis = System.currentTimeMillis()) }
             maybeWriteVault(ctx)
-            val routeMsg = if (res.routesLoaded > 0) " • ${res.routesLoaded} GPS routes" else ""
-            val consentMsg = if (res.pendingRouteSessionIds.isNotEmpty()) " • Route access needed" else ""
-            "Synced ${res.syncedWalkDays} walk days • ${res.addedRuns} updates$routeMsg$consentMsg"
+            val routeMsg = when {
+                res.routesLoaded > 0 -> " • ${res.routesLoaded} GPS routes"
+                res.pendingRouteSessionIds.isNotEmpty() -> " • Route access needed"
+                res.noRouteSessions > 0 -> " • Samsung Health omitted GPS paths (enable routes in HC Settings or import GPX)"
+                else -> ""
+            }
+            "Synced ${res.syncedWalkDays} walk days • ${res.addedRuns} updates$routeMsg"
         }
     }
 
@@ -678,8 +683,15 @@ class StrideCoachViewModel(
     }
 
     fun importBackupFromUri(ctx: Context, cr: ContentResolver, uri: Uri) {
-        runImportTask("Backup import") {
-            val runs = withContext(Dispatchers.IO) { readBackup(cr, uri) }
+        runImportTask("File import") {
+            val raw = withContext(Dispatchers.IO) { readUriText(cr, uri) }
+            if (GpxImporter.isGpxContent(raw)) {
+                val run = GpxImporter.parseGpx(raw) ?: error("No valid <trkpt> coordinates found in GPX")
+                withContext(Dispatchers.IO) { repo.saveRunsDeduplicated(listOf(run)) }
+                maybeWriteVault(ctx)
+                return@runImportTask "Imported GPX path: ${run.name} (${"%.2f".format(run.km())} km, ${run.trackPoints.size} pts)."
+            }
+            val runs = backup.importBackup(raw)
             withContext(Dispatchers.IO) { repo.saveRuns(runs) }
             maybeWriteVault(ctx)
             val km = runs.sumOf { it.distanceMeters } / 1000.0
@@ -703,11 +715,25 @@ class StrideCoachViewModel(
 
     fun importAutoDetectedUri(cr: ContentResolver, uri: Uri) {
         viewModelScope.launch {
-            when (withContext(Dispatchers.IO) { peekKind(cr, uri) }) {
+            val hdr = withContext(Dispatchers.IO) { readUriPrefix(cr, uri) }
+            if (GpxImporter.isGpxContent(hdr)) {
+                importGpxSimple(cr, uri)
+                return@launch
+            }
+            when (backup.detectImportKind(hdr)) {
                 ImportFileKind.RUNNING_TRACKER_BACKUP -> importBackupSimple(cr, uri)
                 ImportFileKind.GOOGLE_TIMELINE -> importTimelineSimple(cr, uri)
-                ImportFileKind.UNKNOWN -> postBanner("Unrecognized file format. Choose a .backup or Timeline.json file.")
+                ImportFileKind.UNKNOWN -> postBanner("Unrecognized file format. Choose a .backup, .gpx, or Timeline.json file.")
             }
+        }
+    }
+
+    private fun importGpxSimple(cr: ContentResolver, uri: Uri) {
+        runImportTask("GPX import") {
+            val txt = withContext(Dispatchers.IO) { readUriText(cr, uri) }
+            val r = GpxImporter.parseGpx(txt) ?: error("No valid GPS points in GPX file")
+            withContext(Dispatchers.IO) { repo.saveRunsDeduplicated(listOf(r)) }
+            "Imported GPX track: ${r.name} (${"%.2f".format(r.km())} km)."
         }
     }
 
@@ -755,10 +781,20 @@ class StrideCoachViewModel(
         }
     }
 
-    private fun readBackup(cr: ContentResolver, uri: Uri): List<RunRecord> {
+    private fun readUriText(cr: ContentResolver, uri: Uri): String {
         val s = cr.openInputStream(uri) ?: error("Cannot open selected file")
-        return s.use { backup.importBackupStream(it) }
+        return s.bufferedReader(Charsets.UTF_8).use { it.readText() }
     }
+
+    private fun readUriPrefix(cr: ContentResolver, uri: Uri): String {
+        val stream = cr.openInputStream(uri) ?: return ""
+        val buf = ByteArray(4096)
+        val n = stream.use { it.read(buf) }
+        return if (n <= 0) "" else String(buf, 0, n, Charsets.UTF_8)
+    }
+
+    private fun readBackup(cr: ContentResolver, uri: Uri): List<RunRecord> =
+        backup.importBackup(readUriText(cr, uri))
 
     private suspend fun readTimeline(cr: ContentResolver, uri: Uri) = run {
         val existing = repo.getAllRunsWithSplits()
@@ -798,14 +834,6 @@ class StrideCoachViewModel(
                     ioFlow.value = ioFlow.value.copy(banner = msg, busy = false)
                 }
         }
-    }
-
-    private fun peekKind(cr: ContentResolver, uri: Uri): ImportFileKind {
-        val stream = cr.openInputStream(uri) ?: return ImportFileKind.UNKNOWN
-        val buf = ByteArray(4096)
-        val n = stream.use { it.read(buf) }
-        if (n <= 0) return ImportFileKind.UNKNOWN
-        return backup.detectImportKind(String(buf, 0, n, Charsets.UTF_8))
     }
 
     private fun postBanner(msg: String) {
