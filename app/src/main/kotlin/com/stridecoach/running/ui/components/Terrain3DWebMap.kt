@@ -41,6 +41,7 @@ internal object MapLibreAssetCache {
     fun warmUp(ctx: Context) {
         getBytes(ctx, "maplibre/maplibre-gl.js")
         getBytes(ctx, "maplibre/maplibre-gl.css")
+        getBytes(ctx, "maplibre/mapbox-gl-rtl-text.js")
     }
 
     fun getBytes(ctx: Context, assetPath: String): ByteArray? =
@@ -273,6 +274,7 @@ private fun serveLocalAsset(ctx: Context, name: String): WebResourceResponse? {
     val clean = when (name) {
         "maplibre-gl.js" -> "maplibre/maplibre-gl.js" to "application/javascript"
         "maplibre-gl.css" -> "maplibre/maplibre-gl.css" to "text/css"
+        "mapbox-gl-rtl-text.js" -> "maplibre/mapbox-gl-rtl-text.js" to "application/javascript"
         else -> return null
     }
     return runCatching {
@@ -622,6 +624,13 @@ private fun buildTerrainHtml(bgHex: String): String = """
         paint: { 'line-color': '#473C69', 'line-width': 4.0 }
       });
     }
+    if (!map.getLayer('hi-layer')) {
+      map.addLayer({
+        id: 'hi-layer', type: 'line', source: 'hi-src',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#3DAEE9', 'line-width': 12.5, 'line-opacity': 0.45, 'line-blur': 2.5 }
+      });
+    }
     if (!map.getLayer('pace-layer')) {
       map.addLayer({
         id: 'pace-layer', type: 'line', source: 'pace-src',
@@ -641,13 +650,6 @@ private fun buildTerrainHtml(bgHex: String): String = """
         id: 'trim-layer', type: 'line', source: 'trim-src',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': '#F87171', 'line-width': 5.4 }
-      });
-    }
-    if (!map.getLayer('hi-layer')) {
-      map.addLayer({
-        id: 'hi-layer', type: 'line', source: 'hi-src',
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#3DAEE9', 'line-width': 7.5 }
       });
     }
     if (!map.getLayer('planner-pts-layer')) {
@@ -686,20 +688,24 @@ private fun buildTerrainHtml(bgHex: String): String = """
         var g = Math.round(174 + (255 - 174) * t);
         var b = Math.round(233 + (255 - 233) * t);
         map.setPaintProperty('hi-layer', 'line-color', 'rgb(' + v + ',' + g + ',' + b + ')');
-        map.setPaintProperty('hi-layer', 'line-width', 7.2 + 3.8 * t);
+        map.setPaintProperty('hi-layer', 'line-width', 12.5 + 5.5 * t);
+        map.setPaintProperty('hi-layer', 'line-opacity', 0.45 + 0.40 * t);
       } else if (dt < 720) {
         map.setPaintProperty('hi-layer', 'line-color', '#FFFFFF');
-        map.setPaintProperty('hi-layer', 'line-width', 11.0);
+        map.setPaintProperty('hi-layer', 'line-width', 18.0);
+        map.setPaintProperty('hi-layer', 'line-opacity', 0.85);
       } else if (dt < 1340) {
         var t2 = (dt - 720) / 620.0;
         var v2 = Math.round(255 + (61 - 255) * t2);
         var g2 = Math.round(255 + (174 - 255) * t2);
         var b2 = Math.round(255 + (233 - 255) * t2);
         map.setPaintProperty('hi-layer', 'line-color', 'rgb(' + v2 + ',' + g2 + ',' + b2 + ')');
-        map.setPaintProperty('hi-layer', 'line-width', 11.0 - 3.6 * t2);
+        map.setPaintProperty('hi-layer', 'line-width', 18.0 - 5.5 * t2);
+        map.setPaintProperty('hi-layer', 'line-opacity', 0.85 - 0.40 * t2);
       } else {
         map.setPaintProperty('hi-layer', 'line-color', '#3DAEE9');
-        map.setPaintProperty('hi-layer', 'line-width', 7.5);
+        map.setPaintProperty('hi-layer', 'line-width', 12.5);
+        map.setPaintProperty('hi-layer', 'line-opacity', 0.45);
         clearInterval(state.hiAnimTimer);
         state.hiAnimTimer = null;
       }
@@ -948,7 +954,23 @@ private fun buildTerrainHtml(bgHex: String): String = """
     } catch (e) {}
   };
 
-  StrideBridge.onMapReady();
+  (function bootstrapRtlAndReady() {
+    function done() { StrideBridge.onMapReady(); }
+    try {
+      if (maplibregl.getRTLTextPluginStatus && maplibregl.getRTLTextPluginStatus() === 'unavailable') {
+        fetch('https://stridecoach.local/assets/maplibre/mapbox-gl-rtl-text.js')
+          .then(function(r) { return r.text(); })
+          .then(function(code) {
+            var blobUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+            maplibregl.setRTLTextPlugin(blobUrl, false);
+            done();
+          })
+          .catch(done);
+        return;
+      }
+    } catch (e) {}
+    done();
+  })();
 })();
 </script>
 </body>

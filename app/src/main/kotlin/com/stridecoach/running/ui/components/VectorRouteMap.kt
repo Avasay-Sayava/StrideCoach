@@ -50,10 +50,12 @@ import org.maplibre.android.style.layers.PropertyFactory.fillExtrusionColor
 import org.maplibre.android.style.layers.PropertyFactory.fillExtrusionHeight
 import org.maplibre.android.style.layers.PropertyFactory.fillExtrusionOpacity
 import org.maplibre.android.style.layers.PropertyFactory.hillshadeExaggeration
+import org.maplibre.android.style.layers.PropertyFactory.lineBlur
 import org.maplibre.android.style.layers.PropertyFactory.lineCap
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineDasharray
 import org.maplibre.android.style.layers.PropertyFactory.lineJoin
+import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
 import org.maplibre.android.style.layers.PropertyFactory.visibility
 import org.maplibre.android.style.layers.TransitionOptions
@@ -409,6 +411,16 @@ private fun installVectorLayers(st: Style) {
     )
     st.addLayer(baseLineLayer("base-layer", "base-src", "#473C69", 4.0f))
     st.addLayer(
+        LineLayer("hi-layer", "hi-src").withProperties(
+            lineColor(Color.parseColor("#3DAEE9")),
+            lineWidth(12.5f),
+            lineOpacity(0.45f),
+            lineBlur(2.5f),
+            lineCap(Property.LINE_CAP_ROUND),
+            lineJoin(Property.LINE_JOIN_ROUND)
+        )
+    )
+    st.addLayer(
         LineLayer("pace-layer", "pace-src").withProperties(
             lineColor(Expression.get("col")),
             lineWidth(5.4f),
@@ -418,7 +430,6 @@ private fun installVectorLayers(st: Style) {
     )
     st.addLayer(baseLineLayer("active-layer", "active-src", "#926EE4", 5.5f))
     st.addLayer(baseLineLayer("trim-layer", "trim-src", "#F87171", 5.4f))
-    st.addLayer(baseLineLayer("hi-layer", "hi-src", "#3DAEE9", 7.4f))
 
     st.addLayer(
         CircleLayer("planner-pts-layer", "planner-pts-src").withProperties(
@@ -889,7 +900,7 @@ private fun startHighlightPulseIn(h: VectorMapHolder, layer: LineLayer) {
         addUpdateListener { va ->
             val t = va.animatedValue as Float
             val col = blendArgb(cStart, cWhite, t)
-            layer.setProperties(lineColor(col), lineWidth(7.0f + 4.0f * t))
+            layer.setProperties(lineColor(col), lineWidth(12.5f + 5.5f * t), lineOpacity(0.45f + 0.40f * t))
         }
         start()
     }
@@ -906,7 +917,7 @@ private fun scheduleHighlightPulseOut(h: VectorMapHolder, layer: LineLayer) {
             addUpdateListener { va ->
                 val t = va.animatedValue as Float
                 val col = blendArgb(cWhite, cEnd, t)
-                layer.setProperties(lineColor(col), lineWidth(11.0f - 3.6f * t))
+                layer.setProperties(lineColor(col), lineWidth(18.0f - 5.5f * t), lineOpacity(0.85f - 0.40f * t))
             }
             start()
         }
