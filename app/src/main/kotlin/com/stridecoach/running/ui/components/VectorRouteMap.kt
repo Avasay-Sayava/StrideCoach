@@ -176,8 +176,8 @@ fun VectorRouteMap(
     val topHudPx = with(density) { topHudDp.dp.roundToPx() }
     val effectiveTopPx = if (topOcclusionPx > 0) topOcclusionPx else topHudPx
     val effectiveBottomPx = if (keepCenteredOnSheetDrag && bottomOcclusionPx > 0) bottomOcclusionPx else staticBottomPx
-    val fitTopClearPx = effectiveTopPx + with(density) { 20.dp.roundToPx() }
-    val fitBottomClearPx = effectiveBottomPx + with(density) { 44.dp.roundToPx() }
+    val fitTopClearPx = effectiveTopPx + with(density) { 24.dp.roundToPx() }
+    val fitBottomClearPx = effectiveBottomPx + with(density) { 24.dp.roundToPx() }
     val fitSidePx = with(density) { 36.dp.roundToPx() }
     val effectiveHiBottomPx = if (highlightBottomOcclusionPx > 0) highlightBottomOcclusionPx else effectiveBottomPx
 
@@ -999,14 +999,13 @@ private fun updateCamera(
                                         .zoom((cam2d.zoom - 0.45).coerceAtLeast(1.0))
                                         .tilt(45.0)
                                         .bearing(0.0)
-                                        .padding(0.0, 0.0, 0.0, 0.0)
+                                        .padding(safeSide.toDouble(), safeTop.toDouble(), safeSide.toDouble(), safeBot.toDouble())
                                         .build()
                                 } else {
                                     CameraPosition.Builder(cam2d)
-                                        .zoom((cam2d.zoom - 0.06).coerceAtLeast(1.0))
                                         .tilt(0.0)
                                         .bearing(0.0)
-                                        .padding(0.0, 0.0, 0.0, 0.0)
+                                        .padding(safeSide.toDouble(), safeTop.toDouble(), safeSide.toDouble(), safeBot.toDouble())
                                         .build()
                                 }
                                 if (!hadPriorFit && !modeChanged && !toggle3dChanged) {

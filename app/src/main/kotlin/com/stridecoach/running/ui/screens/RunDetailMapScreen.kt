@@ -319,7 +319,7 @@ fun RunDetailMapScreen(
                 bottomOcclusionPx = bottomOcclusionPx,
                 highlightBottomOcclusionPx = peekSheetPx,
                 topHudDp = if (prefs.showTopMapHud) 202 else 124,
-                bottomPadDp = 268,
+                bottomPadDp = 252,
                 recenterToken = recenterTick,
                 onUserManualPan = { camMode = MapCameraMode.FREE_PAN },
                 modifier = Modifier.fillMaxSize()

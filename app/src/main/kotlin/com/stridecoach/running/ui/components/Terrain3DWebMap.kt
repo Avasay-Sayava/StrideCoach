@@ -563,15 +563,15 @@ private fun buildTerrainHtml(bgHex: String): String = """
         type: 'fill-extrusion',
         source: 'openmaptiles',
         'source-layer': 'building',
-        minzoom: 13.8,
+        minzoom: 12.5,
         paint: {
-          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
-          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-          'fill-extrusion-color': '#2A303B',
-          'fill-extrusion-opacity': 0.78
+          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], 12],
+          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0],
+          'fill-extrusion-color': '#3A4354',
+          'fill-extrusion-opacity': 0.86
         }
       };
-      var bBefore = map.getLayer('water_name') ? 'water_name' : undefined;
+      var bBefore = map.getLayer('highway_name_other') ? 'highway_name_other' : (map.getLayer('place_city') ? 'place_city' : undefined);
       if (bBefore) map.addLayer(bldDef, bBefore); else map.addLayer(bldDef);
     }
 
