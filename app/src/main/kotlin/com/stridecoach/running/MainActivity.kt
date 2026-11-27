@@ -1,6 +1,7 @@
 package com.stridecoach.running
 
 import android.content.Intent
+import android.graphics.Color.TRANSPARENT
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -8,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -22,56 +24,48 @@ import com.stridecoach.running.ui.theme.StrideCoachTheme
 import com.stridecoach.running.ui.theme.StrideThemeState
 
 class MainActivity : ComponentActivity() {
-    private lateinit var vmRef: StrideCoachViewModel
+    private lateinit var vm: StrideCoachViewModel
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(KdeNavBg.toArgb())
-        )
+    override fun onCreate(saved: Bundle?) {
+        super.onCreate(saved)
+        setBars(light = false, nav = KdeNavBg.toArgb())
         val app = application as StrideCoachApplication
-        val factory = StrideCoachViewModel.Factory(app.repository, app.preferencesStore)
-        vmRef = ViewModelProvider(this, factory)[StrideCoachViewModel::class.java]
-        handleIntentUri(intent)
+        val fac = StrideCoachViewModel.Factory(app.repository, app.preferencesStore)
+        vm = ViewModelProvider(this, fac)[StrideCoachViewModel::class.java]
+        onUri(intent)
+        setContent { Root(app, fac) }
+    }
 
-        setContent {
-            val prefs by app.preferencesStore.preferences.collectAsState(initial = CoachPreferences())
-            StrideCoachTheme(
-                themeMode = prefs.themeMode,
-                accentName = prefs.accentName
-            ) {
-                val isLight = StrideThemeState.isLight
-                val navArgb = KdeNavBg.toArgb()
-                LaunchedEffect(isLight, navArgb) { applySystemBarStyle(isLight, navArgb) }
-                val vm: StrideCoachViewModel = viewModel(factory = factory)
-                AppShell(vm, window)
-            }
+    @Composable
+    private fun Root(app: StrideCoachApplication, fac: ViewModelProvider.Factory) {
+        val prefs by app.preferencesStore.preferences.collectAsState(initial = CoachPreferences())
+        StrideCoachTheme(themeMode = prefs.themeMode, accentName = prefs.accentName) {
+            val light = StrideThemeState.isLight
+            val nav = KdeNavBg.toArgb()
+            LaunchedEffect(light, nav) { setBars(light, nav) }
+            val model: StrideCoachViewModel = viewModel(factory = fac)
+            AppShell(model, window)
         }
     }
 
-    private fun applySystemBarStyle(isLight: Boolean, navArgb: Int) {
-        val statusStyle = if (isLight) {
-            SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
-        } else {
-            SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-        }
-        val navStyle = if (isLight) SystemBarStyle.light(navArgb, navArgb) else SystemBarStyle.dark(navArgb)
-        enableEdgeToEdge(statusBarStyle = statusStyle, navigationBarStyle = navStyle)
+    private fun setBars(light: Boolean, nav: Int) {
+        val top = if (light) SystemBarStyle.light(TRANSPARENT, TRANSPARENT) else SystemBarStyle.dark(TRANSPARENT)
+        val bot = if (light) SystemBarStyle.light(nav, nav) else SystemBarStyle.dark(nav)
+        enableEdgeToEdge(statusBarStyle = top, navigationBarStyle = bot)
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleIntentUri(intent)
+    override fun onNewIntent(i: Intent) {
+        super.onNewIntent(i)
+        setIntent(i)
+        onUri(i)
     }
 
-    private fun handleIntentUri(i: Intent?) {
-        val u = readUri(i) ?: return
-        vmRef.importAutoDetectedUri(contentResolver, u)
+    private fun onUri(i: Intent?) {
+        val u = uriOf(i) ?: return
+        vm.importAutoDetectedUri(contentResolver, u)
     }
 
-    private fun readUri(i: Intent?): Uri? {
+    private fun uriOf(i: Intent?): Uri? {
         if (i == null) return null
         if (i.action == Intent.ACTION_VIEW) return i.data
         if (i.action != Intent.ACTION_SEND) return null

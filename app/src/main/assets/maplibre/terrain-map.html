@@ -78,6 +78,8 @@
       if (beforeId) map.addLayer(hsDef, beforeId); else map.addLayer(hsDef);
     }
 
+    installRouteAndMarkerLayers(map);
+
     if (map.getSource('openmaptiles') && !map.getLayer('3d-buildings-layer')) {
       var bldDef = {
         id: '3d-buildings-layer',
@@ -92,11 +94,8 @@
           'fill-extrusion-opacity': 1.0
         }
       };
-      var bBefore = map.getLayer('highway_name_other') ? 'highway_name_other' : (map.getLayer('place_city') ? 'place_city' : undefined);
-      if (bBefore) map.addLayer(bldDef, bBefore); else map.addLayer(bldDef);
+      map.addLayer(bldDef);
     }
-
-    installRouteAndMarkerLayers(map);
   }
 
   function installRouteAndMarkerLayers(map) {

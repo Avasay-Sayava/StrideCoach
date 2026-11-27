@@ -253,6 +253,8 @@ fun RunDetailMapScreen(
                 trimRange = trimRange,
                 snapPreview = snapPreview,
                 isSnapping = isSnapping,
+                hiRange = hiRange,
+                onClearHighlight = { hiRange = null },
                 onTogglePlay = {
                     if (prog >= 0.99f) prog = 0f
                     playing = !playing
@@ -267,8 +269,7 @@ fun RunDetailMapScreen(
                 onScrubDone = { scrubbing = false },
                 onTab = { sheetTab = it },
                 onHighlight = { rng ->
-                    val isExpanded = scaffoldState.bottomSheetState.currentValue == SheetValue.Expanded
-                    if (hiRange == rng && !isExpanded) {
+                    if (hiRange == rng) {
                         hiRange = null
                     } else {
                         hiRange = rng
@@ -322,6 +323,7 @@ fun RunDetailMapScreen(
                 bottomPadDp = 252,
                 recenterToken = recenterTick,
                 onUserManualPan = { camMode = MapCameraMode.FREE_PAN },
+                onMapTap = { if (hiRange != null) hiRange = null },
                 modifier = Modifier.fillMaxSize()
             )
             DetailMapControlsOverlay(
@@ -561,6 +563,8 @@ private fun RunDetailSheetBody(
     trimRange: ClosedFloatingPointRange<Float>,
     snapPreview: SnapMergeResult?,
     isSnapping: Boolean,
+    hiRange: IntRange?,
+    onClearHighlight: () -> Unit,
     onTogglePlay: () -> Unit,
     onSpeedSlider: (Float) -> Unit,
     onCycleSpeed: () -> Unit,
@@ -601,7 +605,7 @@ private fun RunDetailSheetBody(
         ActionTabsRow(sheetTab, onTab)
         val activeSegIdx = replayHead?.elapsedMs?.let { t -> segs.indexOfFirst { t in it.startMs..it.endMs } }
         when (sheetTab) {
-            0 -> SplitsTable(evals, baselinePaceSec, pts, replayHead?.currentKm, onHighlight)
+            0 -> SplitsTable(evals, baselinePaceSec, pts, replayHead?.currentKm, hiRange, onHighlight, onClearHighlight)
             1 -> TopographyPanel(run, topo, isFetchingTopo, replayHead?.let { (it.distM / 1000.0).toFloat() }, onFetchDemElevation)
             2 -> SegmentsList(segs, pts, activeSegIdx, onHighlight)
             3 -> TwoSidedTrimmerPanel(run, pts, trimRange, onTrimRange, onApplyTrim)
@@ -915,15 +919,32 @@ private fun SplitsTable(
     baselinePaceSec: Int,
     pts: List<TrackPoint>,
     activeKm: Int?,
-    onSelect: (IntRange) -> Unit
+    selectedRange: IntRange?,
+    onSelect: (IntRange) -> Unit,
+    onClear: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text("KM SPLITS (tap row)", style = MaterialTheme.typography.labelMedium, color = KdeMuted, fontWeight = FontWeight.Bold)
-        Text("Fitness ref ${formatPace(baselinePaceSec)}/km", style = MaterialTheme.typography.labelSmall.merge(TabularNumberStyle), color = KdePurple)
+        Text("KM SPLITS (tap to toggle)", style = MaterialTheme.typography.labelMedium, color = KdeMuted, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (selectedRange != null) {
+                Text(
+                    "Clear",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF3DAEE9),
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFF3DAEE9).copy(alpha = 0.16f))
+                        .clickable(onClick = onClear)
+                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                )
+            }
+            Text("Fitness ref ${formatPace(baselinePaceSec)}/km", style = MaterialTheme.typography.labelSmall.merge(TabularNumberStyle), color = KdePurple)
+        }
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         PaceZone.entries.forEach { z ->
@@ -948,21 +969,31 @@ private fun SplitsTable(
         val c = paceZoneColor(ev.zone.zoneNum)
         val barFrac = (1f - (ev.deltaFromTargetSec.coerceIn(-45, 70) / 140f)).coerceIn(0.22f, 1f)
         val isLiveKm = activeKm == ev.split.splitNumber
-        val rowBg = if (isLiveKm) KdePurple.copy(alpha = 0.24f) else KdeCardAlt.copy(alpha = if (i % 2 == 0) 0.55f else 0.2f)
+        val rowRange = findKmRange(pts, ev.split.splitNumber)
+        val isSelected = selectedRange != null && rowRange == selectedRange
+        val rowBg = when {
+            isSelected -> Color(0xFF3DAEE9).copy(alpha = 0.24f)
+            isLiveKm -> KdePurple.copy(alpha = 0.24f)
+            else -> KdeCardAlt.copy(alpha = if (i % 2 == 0) 0.55f else 0.2f)
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(6.dp))
                 .background(rowBg)
-                .clickable { findKmRange(pts, ev.split.splitNumber)?.let(onSelect) }
+                .clickable { rowRange?.let(onSelect) }
                 .padding(horizontal = 8.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = if (isLiveKm) "${ev.split.splitNumber}•" else "${ev.split.splitNumber}",
                 style = MaterialTheme.typography.bodySmall.merge(TabularNumberStyle),
-                color = if (isLiveKm) KdePurple else KdeText,
-                fontWeight = if (isLiveKm) FontWeight.Bold else FontWeight.Normal,
+                color = when {
+                    isSelected -> Color(0xFF7DD3FC)
+                    isLiveKm -> KdePurple
+                    else -> KdeText
+                },
+                fontWeight = if (isLiveKm || isSelected) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier.weight(0.5f)
             )
             Text(formatPace(ev.paceSecPerKm), style = MaterialTheme.typography.bodySmall.merge(TabularNumberStyle), color = c, fontWeight = FontWeight.Bold, modifier = Modifier.weight(0.9f))
