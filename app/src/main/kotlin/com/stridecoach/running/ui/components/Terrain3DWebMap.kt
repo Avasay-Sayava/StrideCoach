@@ -335,172 +335,180 @@ private fun buildTerrainPayload(
     val geoHash = computePtsGeoHash(validPts)
 
     val root = JSONObject()
-    root.put("styleUri", styleUri)
-    root.put("interactive", interactive)
-    root.put("showHead", showHead && validPts.isNotEmpty())
-    root.put("showUserDot", showUserDot && userLoc != null)
-    root.put("colorByPace", colorByPace)
-    root.put("showBuildings", show3dBuildings)
-    root.put("showHillshade", showTerrainHillshade)
-    root.put("exag", exaggeration.coerceIn(1.0f, 4.0f).toDouble())
-    root.put("camMode", cameraMode.name)
-    root.put("lockAutoFit", lockAutoFit)
-    root.put("recenter", recenterToken)
-    root.put("geoHash", geoHash)
-    root.put("ptsCount", validPts.size)
-    root.put("topCss", topCss.toDouble())
-    root.put("botCss", botCss.toDouble())
-    root.put("fitTopClearCss", fitTopClearCss.toDouble())
-    root.put("fitBotClearCss", fitBotClearCss.toDouble())
-    root.put("fitSideCss", fitSideCss.toDouble())
-    root.put("hiBotCss", hiBotCss.toDouble())
-    root.put("hiTrigger", hiTrigger)
-    root.put("animateHi", animateHighlight)
-    root.put("liveHeading", (replayHead?.bearingDeg ?: liveHeadingDeg ?: 0f).toDouble())
-    root.put("fallback", JSONArray().put(fallbackCenter.longitude).put(fallbackCenter.latitude))
+        .put("styleUri", styleUri)
+        .put("interactive", interactive)
+        .put("showHead", showHead && validPts.isNotEmpty())
+        .put("showUserDot", showUserDot && userLoc != null)
+        .put("colorByPace", colorByPace)
+        .put("showBuildings", show3dBuildings)
+        .put("showHillshade", showTerrainHillshade)
+        .put("exag", exaggeration.coerceIn(1.0f, 4.0f).toDouble())
+        .put("camMode", cameraMode.name)
+        .put("lockAutoFit", lockAutoFit)
+        .put("recenter", recenterToken)
+        .put("geoHash", geoHash)
+        .put("ptsCount", validPts.size)
+        .put("topCss", topCss.toDouble())
+        .put("botCss", botCss.toDouble())
+        .put("fitTopClearCss", fitTopClearCss.toDouble())
+        .put("fitBotClearCss", fitBotClearCss.toDouble())
+        .put("fitSideCss", fitSideCss.toDouble())
+        .put("hiBotCss", hiBotCss.toDouble())
+        .put("hiTrigger", hiTrigger)
+        .put("animateHi", animateHighlight)
+        .put("liveHeading", (replayHead?.bearingDeg ?: liveHeadingDeg ?: 0f).toDouble())
+        .put("fallback", JSONArray().put(fallbackCenter.longitude).put(fallbackCenter.latitude))
 
-    if (userLoc != null) {
-        root.put("userLoc", JSONArray().put(userLoc.longitude).put(userLoc.latitude))
+    if (userLoc != null) root.put("userLoc", JSONArray().put(userLoc.longitude).put(userLoc.latitude))
+    val headPt = replayHead?.let { LatLon(it.lat, it.lon) } ?: validPts.lastOrNull()?.let { LatLon(it.latitude, it.longitude) }
+    if (headPt != null) root.put("head", JSONArray().put(headPt.longitude).put(headPt.latitude))
+
+    appendRouteBounds(root, if (validPts.isNotEmpty()) validPts.map { LatLon(it.latitude, it.longitude) } else validGuide)
+    appendBaseAndGuide(root, h, validPts, validGuide, geoHash)
+    appendWaypoints(root, validWaypoints)
+    appendRouteSeries(root, h, validPts, pts, replayHead, colorByPace, smoothGradient, refPaceSec, geoHash)
+    appendTrimSegments(root, validPts, trimStartIdx, trimEndIdx)
+    appendHighlightData(root, validPts, hiRange, hiTrigger)
+    return root.toString()
+}
+
+private fun appendRouteBounds(root: JSONObject, routePts: List<LatLon>) {
+    if (routePts.isEmpty()) return
+    var minLat = Double.MAX_VALUE
+    var maxLat = -Double.MAX_VALUE
+    var minLon = Double.MAX_VALUE
+    var maxLon = -Double.MAX_VALUE
+    for (p in routePts) {
+        if (p.latitude < minLat) minLat = p.latitude
+        if (p.latitude > maxLat) maxLat = p.latitude
+        if (p.longitude < minLon) minLon = p.longitude
+        if (p.longitude > maxLon) maxLon = p.longitude
     }
+    root.put("bounds", JSONArray().put(JSONArray().put(minLon).put(minLat)).put(JSONArray().put(maxLon).put(maxLat)))
+    root.put("routeStart", JSONArray().put(routePts.first().longitude).put(routePts.first().latitude))
+    root.put("routeEnd", JSONArray().put(routePts.last().longitude).put(routePts.last().latitude))
+}
 
-    val headPt = replayHead?.let { LatLon(it.lat, it.lon) }
-        ?: validPts.lastOrNull()?.let { LatLon(it.latitude, it.longitude) }
-    if (headPt != null) {
-        root.put("head", JSONArray().put(headPt.longitude).put(headPt.latitude))
+private fun appendBaseAndGuide(
+    root: JSONObject,
+    h: TerrainMapHolder,
+    validPts: List<TrackPoint>,
+    validGuide: List<LatLon>,
+    geoHash: Int
+) {
+    val baseKey = "${validPts.size}_$geoHash"
+    if (!h.pageReady || baseKey != h.sentBaseKey) {
+        val arr = JSONArray()
+        if (validPts.size >= 2) {
+            for (p in validPts) arr.put(JSONArray().put(p.longitude).put(p.latitude))
+        }
+        root.put("base", arr)
+        if (h.pageReady) h.sentBaseKey = baseKey
     }
+    val guideKey = "${validGuide.size}_${validGuide.firstOrNull()?.latitude}_${validGuide.lastOrNull()?.longitude}"
+    if (!h.pageReady || guideKey != h.sentGuideKey) {
+        val arr = JSONArray()
+        if (validGuide.size >= 2) {
+            for (p in validGuide) arr.put(JSONArray().put(p.longitude).put(p.latitude))
+        }
+        root.put("guide", arr)
+        if (h.pageReady) h.sentGuideKey = guideKey
+    }
+}
 
-    val routePts = if (validPts.isNotEmpty()) validPts.map { LatLon(it.latitude, it.longitude) } else validGuide
-    if (routePts.isNotEmpty()) {
+private fun appendWaypoints(root: JSONObject, wps: List<LatLon>) {
+    val arr = JSONArray()
+    wps.forEachIndexed { idx, p ->
+        val kind = when {
+            idx == 0 -> "start"
+            idx == wps.lastIndex && wps.size > 1 -> "end"
+            else -> "mid"
+        }
+        arr.put(JSONObject().put("lon", p.longitude).put("lat", p.latitude).put("kind", kind))
+    }
+    root.put("waypoints", arr)
+}
+
+private fun appendRouteSeries(
+    root: JSONObject,
+    h: TerrainMapHolder,
+    validPts: List<TrackPoint>,
+    rawPts: List<TrackPoint>,
+    replayHead: ReplayHead?,
+    colorByPace: Boolean,
+    smoothGradient: Boolean,
+    refPaceSec: Int,
+    geoHash: Int
+) {
+    if (validPts.size < 2) {
+        root.put("pace", JSONArray()).put("active", JSONArray())
+        return
+    }
+    if (!colorByPace) {
+        val actArr = JSONArray()
+        for (pt in buildActiveCoords(validPts, replayHead)) actArr.put(JSONArray().put(pt.longitude()).put(pt.latitude()))
+        root.put("active", actArr).put("pace", JSONArray())
+        return
+    }
+    val dirty = h.cachedGeoHash != geoHash || h.cachedPtsRef !== rawPts || h.cachedRefPace != refPaceSec || h.cachedSmoothGrad != smoothGradient
+    if (dirty) {
+        h.cachedGeoHash = geoHash
+        h.cachedPtsRef = rawPts
+        h.cachedRefPace = refPaceSec
+        h.cachedSmoothGrad = smoothGradient
+        h.cachedChunks = buildColorChunks(validPts, refPaceSec, smoothGradient)
+    }
+    val paceArr = JSONArray()
+    for (f in sliceChunksToHead(h.cachedChunks, validPts, replayHead)) {
+        val ls = f.geometry() as? LineString ?: continue
+        val coords = JSONArray()
+        for (pt in ls.coordinates()) coords.put(JSONArray().put(pt.longitude()).put(pt.latitude()))
+        paceArr.put(JSONObject().put("col", f.getStringProperty("col") ?: "#926EE4").put("coords", coords))
+    }
+    root.put("pace", paceArr).put("active", JSONArray())
+}
+
+private fun appendTrimSegments(root: JSONObject, validPts: List<TrackPoint>, startIdx: Int?, endIdx: Int?) {
+    val arr = JSONArray()
+    if (validPts.size >= 2) {
+        if (startIdx != null && startIdx >= 1) {
+            val seg = JSONArray()
+            for (i in 0..startIdx.coerceAtMost(validPts.lastIndex)) {
+                seg.put(JSONArray().put(validPts[i].longitude).put(validPts[i].latitude))
+            }
+            arr.put(seg)
+        }
+        if (endIdx != null && endIdx < validPts.lastIndex) {
+            val seg = JSONArray()
+            for (i in endIdx.coerceAtLeast(0)..validPts.lastIndex) {
+                seg.put(JSONArray().put(validPts[i].longitude).put(validPts[i].latitude))
+            }
+            arr.put(seg)
+        }
+    }
+    root.put("trim", arr)
+}
+
+private fun appendHighlightData(root: JSONObject, validPts: List<TrackPoint>, hiRange: IntRange?, hiTrigger: Int) {
+    val hiArr = JSONArray()
+    if (hiRange != null && validPts.size >= 2 && hiRange.last - hiRange.first >= 1) {
+        val s = hiRange.first.coerceIn(0, validPts.lastIndex)
+        val e = hiRange.last.coerceIn(s, validPts.lastIndex)
         var minLat = Double.MAX_VALUE
         var maxLat = -Double.MAX_VALUE
         var minLon = Double.MAX_VALUE
         var maxLon = -Double.MAX_VALUE
-        for (p in routePts) {
+        for (i in s..e) {
+            val p = validPts[i]
+            hiArr.put(JSONArray().put(p.longitude).put(p.latitude))
             if (p.latitude < minLat) minLat = p.latitude
             if (p.latitude > maxLat) maxLat = p.latitude
             if (p.longitude < minLon) minLon = p.longitude
             if (p.longitude > maxLon) maxLon = p.longitude
         }
-        root.put(
-            "bounds",
-            JSONArray()
-                .put(JSONArray().put(minLon).put(minLat))
-                .put(JSONArray().put(maxLon).put(maxLat))
-        )
-        val lastPt = routePts.last()
-        root.put("routeEnd", JSONArray().put(lastPt.longitude).put(lastPt.latitude))
-        root.put("routeStart", JSONArray().put(routePts.first().longitude).put(routePts.first().latitude))
+        root.put("hiBounds", JSONArray().put(JSONArray().put(minLon).put(minLat)).put(JSONArray().put(maxLon).put(maxLat)))
     }
-
-    val baseKey = "${validPts.size}_$geoHash"
-    if (!h.pageReady || baseKey != h.sentBaseKey) {
-        val baseArr = JSONArray()
-        if (validPts.size >= 2) {
-            for (p in validPts) baseArr.put(JSONArray().put(p.longitude).put(p.latitude))
-        }
-        root.put("base", baseArr)
-        if (h.pageReady) h.sentBaseKey = baseKey
-    }
-
-    val guideKey = "${validGuide.size}_${validGuide.firstOrNull()?.latitude}_${validGuide.lastOrNull()?.longitude}"
-    if (!h.pageReady || guideKey != h.sentGuideKey) {
-        val guideArr = JSONArray()
-        if (validGuide.size >= 2) {
-            for (p in validGuide) guideArr.put(JSONArray().put(p.longitude).put(p.latitude))
-        }
-        root.put("guide", guideArr)
-        if (h.pageReady) h.sentGuideKey = guideKey
-    }
-
-    val wpArr = JSONArray()
-    validWaypoints.forEachIndexed { idx, p ->
-        val kind = when {
-            idx == 0 -> "start"
-            idx == validWaypoints.lastIndex && validWaypoints.size > 1 -> "end"
-            else -> "mid"
-        }
-        wpArr.put(JSONObject().put("lon", p.longitude).put("lat", p.latitude).put("kind", kind))
-    }
-    root.put("waypoints", wpArr)
-
-    if (validPts.size >= 2) {
-        if (colorByPace) {
-            val dirty = h.cachedGeoHash != geoHash || h.cachedPtsRef !== pts || h.cachedRefPace != refPaceSec || h.cachedSmoothGrad != smoothGradient
-            if (dirty) {
-                h.cachedGeoHash = geoHash
-                h.cachedPtsRef = pts
-                h.cachedRefPace = refPaceSec
-                h.cachedSmoothGrad = smoothGradient
-                h.cachedChunks = buildColorChunks(validPts, refPaceSec, smoothGradient)
-            }
-            val feats = sliceChunksToHead(h.cachedChunks, validPts, replayHead)
-            val paceArr = JSONArray()
-            for (f in feats) {
-                val ls = f.geometry() as? LineString ?: continue
-                val coords = JSONArray()
-                for (pt in ls.coordinates()) {
-                    coords.put(JSONArray().put(pt.longitude()).put(pt.latitude()))
-                }
-                paceArr.put(JSONObject().put("col", f.getStringProperty("col") ?: "#926EE4").put("coords", coords))
-            }
-            root.put("pace", paceArr)
-            root.put("active", JSONArray())
-        } else {
-            val activeCoords = buildActiveCoords(validPts, replayHead)
-            val actArr = JSONArray()
-            for (pt in activeCoords) actArr.put(JSONArray().put(pt.longitude()).put(pt.latitude()))
-            root.put("active", actArr)
-            root.put("pace", JSONArray())
-        }
-    } else {
-        root.put("pace", JSONArray())
-        root.put("active", JSONArray())
-    }
-
-    val trimArr = JSONArray()
-    if (validPts.size >= 2) {
-        if (trimStartIdx != null && trimStartIdx >= 1) {
-            val e = trimStartIdx.coerceAtMost(validPts.lastIndex)
-            val seg = JSONArray()
-            for (i in 0..e) seg.put(JSONArray().put(validPts[i].longitude).put(validPts[i].latitude))
-            trimArr.put(seg)
-        }
-        if (trimEndIdx != null && trimEndIdx < validPts.lastIndex) {
-            val s = trimEndIdx.coerceAtLeast(0)
-            val seg = JSONArray()
-            for (i in s..validPts.lastIndex) seg.put(JSONArray().put(validPts[i].longitude).put(validPts[i].latitude))
-            trimArr.put(seg)
-        }
-    }
-    root.put("trim", trimArr)
-
-    val hiArr = JSONArray()
-    if (hiRange != null && validPts.size >= 2 && hiRange.last - hiRange.first >= 1) {
-        val s = hiRange.first.coerceIn(0, validPts.lastIndex)
-        val e = hiRange.last.coerceIn(s, validPts.lastIndex)
-        var hiMinLat = Double.MAX_VALUE
-        var hiMaxLat = -Double.MAX_VALUE
-        var hiMinLon = Double.MAX_VALUE
-        var hiMaxLon = -Double.MAX_VALUE
-        for (i in s..e) {
-            val p = validPts[i]
-            hiArr.put(JSONArray().put(p.longitude).put(p.latitude))
-            if (p.latitude < hiMinLat) hiMinLat = p.latitude
-            if (p.latitude > hiMaxLat) hiMaxLat = p.latitude
-            if (p.longitude < hiMinLon) hiMinLon = p.longitude
-            if (p.longitude > hiMaxLon) hiMaxLon = p.longitude
-        }
-        root.put(
-            "hiBounds",
-            JSONArray()
-                .put(JSONArray().put(hiMinLon).put(hiMinLat))
-                .put(JSONArray().put(hiMaxLon).put(hiMaxLat))
-        )
-    }
-    root.put("hi", hiArr)
-    root.put("hiKey", "${hiRange?.first}_${hiRange?.last}_$hiTrigger")
-
-    return root.toString()
+    root.put("hi", hiArr).put("hiKey", "${hiRange?.first}_${hiRange?.last}_$hiTrigger")
 }
 
 private fun buildTerrainHtml(bgHex: String): String = """
@@ -628,7 +636,7 @@ private fun buildTerrainHtml(bgHex: String): String = """
       map.addLayer({
         id: 'hi-layer', type: 'line', source: 'hi-src',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#3DAEE9', 'line-width': 12.5, 'line-opacity': 0.45, 'line-blur': 2.5 }
+        paint: { 'line-color': '#256F96', 'line-width': 10.5, 'line-opacity': 1.0, 'line-blur': 0.0 }
       });
     }
     if (!map.getLayer('pace-layer')) {
@@ -684,28 +692,24 @@ private fun buildTerrainHtml(bgHex: String): String = """
       var dt = Date.now() - startMs;
       if (dt < 340) {
         var t = dt / 340.0;
-        var v = Math.round(61 + (255 - 61) * t);
-        var g = Math.round(174 + (255 - 174) * t);
-        var b = Math.round(233 + (255 - 233) * t);
+        var v = Math.round(37 + (125 - 37) * t);
+        var g = Math.round(111 + (211 - 111) * t);
+        var b = Math.round(150 + (252 - 150) * t);
         map.setPaintProperty('hi-layer', 'line-color', 'rgb(' + v + ',' + g + ',' + b + ')');
-        map.setPaintProperty('hi-layer', 'line-width', 12.5 + 5.5 * t);
-        map.setPaintProperty('hi-layer', 'line-opacity', 0.45 + 0.40 * t);
+        map.setPaintProperty('hi-layer', 'line-width', 10.5 + 3.0 * t);
       } else if (dt < 720) {
-        map.setPaintProperty('hi-layer', 'line-color', '#FFFFFF');
-        map.setPaintProperty('hi-layer', 'line-width', 18.0);
-        map.setPaintProperty('hi-layer', 'line-opacity', 0.85);
+        map.setPaintProperty('hi-layer', 'line-color', '#7DD3FC');
+        map.setPaintProperty('hi-layer', 'line-width', 13.5);
       } else if (dt < 1340) {
         var t2 = (dt - 720) / 620.0;
-        var v2 = Math.round(255 + (61 - 255) * t2);
-        var g2 = Math.round(255 + (174 - 255) * t2);
-        var b2 = Math.round(255 + (233 - 255) * t2);
+        var v2 = Math.round(125 + (37 - 125) * t2);
+        var g2 = Math.round(211 + (111 - 211) * t2);
+        var b2 = Math.round(252 + (150 - 252) * t2);
         map.setPaintProperty('hi-layer', 'line-color', 'rgb(' + v2 + ',' + g2 + ',' + b2 + ')');
-        map.setPaintProperty('hi-layer', 'line-width', 18.0 - 5.5 * t2);
-        map.setPaintProperty('hi-layer', 'line-opacity', 0.85 - 0.40 * t2);
+        map.setPaintProperty('hi-layer', 'line-width', 13.5 - 3.0 * t2);
       } else {
-        map.setPaintProperty('hi-layer', 'line-color', '#3DAEE9');
-        map.setPaintProperty('hi-layer', 'line-width', 12.5);
-        map.setPaintProperty('hi-layer', 'line-opacity', 0.45);
+        map.setPaintProperty('hi-layer', 'line-color', '#256F96');
+        map.setPaintProperty('hi-layer', 'line-width', 10.5);
         clearInterval(state.hiAnimTimer);
         state.hiAnimTimer = null;
       }

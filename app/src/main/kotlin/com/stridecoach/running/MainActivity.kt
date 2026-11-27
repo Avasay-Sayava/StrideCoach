@@ -43,23 +43,21 @@ class MainActivity : ComponentActivity() {
             ) {
                 val isLight = StrideThemeState.isLight
                 val navArgb = KdeNavBg.toArgb()
-                LaunchedEffect(isLight, navArgb) {
-                    if (isLight) {
-                        enableEdgeToEdge(
-                            statusBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
-                            navigationBarStyle = SystemBarStyle.light(navArgb, navArgb)
-                        )
-                    } else {
-                        enableEdgeToEdge(
-                            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-                            navigationBarStyle = SystemBarStyle.dark(navArgb)
-                        )
-                    }
-                }
+                LaunchedEffect(isLight, navArgb) { applySystemBarStyle(isLight, navArgb) }
                 val vm: StrideCoachViewModel = viewModel(factory = factory)
                 AppShell(vm, window)
             }
         }
+    }
+
+    private fun applySystemBarStyle(isLight: Boolean, navArgb: Int) {
+        val statusStyle = if (isLight) {
+            SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+        } else {
+            SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        }
+        val navStyle = if (isLight) SystemBarStyle.light(navArgb, navArgb) else SystemBarStyle.dark(navArgb)
+        enableEdgeToEdge(statusBarStyle = statusStyle, navigationBarStyle = navStyle)
     }
 
     override fun onNewIntent(intent: Intent) {
