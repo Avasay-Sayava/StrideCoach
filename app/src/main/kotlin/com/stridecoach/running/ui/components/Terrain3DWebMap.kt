@@ -119,6 +119,7 @@ internal fun Terrain3DWebMap(
     hiBottomPx: Int = 0,
     recenterToken: Int = 0,
     playing: Boolean = false,
+    playbackRatePerSec: Float = 0f,
     northLockedInFollow: Boolean = false,
     resetNorthToken: Int = 0,
     onUserManualPan: () -> Unit = {},
@@ -172,7 +173,7 @@ internal fun Terrain3DWebMap(
             val frameJson = buildFrameJson(
                 prep, replayHead, userLocation, showHead, showUserDot, colorByPace,
                 cameraMode, liveHeadingDeg, topCss, botCss, fitTopCss, fitBotCss, fitSideCss,
-                recenterToken, playing, northLockedInFollow, resetNorthToken
+                recenterToken, playing, playbackRatePerSec, northLockedInFollow, resetNorthToken
             )
             enqueueScene(h, view, staticJson, frameJson)
         },
@@ -364,6 +365,7 @@ private fun buildFrameJson(
     fitSideCss: Int,
     recenter: Int,
     playing: Boolean,
+    playbackRatePerSec: Float,
     northLocked: Boolean,
     resetNorth: Int
 ): String {
@@ -376,6 +378,7 @@ private fun buildFrameJson(
         .put("camMode", cam.name)
         .put("recenter", recenter)
         .put("playing", playing)
+        .put("fracRate", playbackRatePerSec.toDouble())
         .put("northLocked", northLocked)
         .put("resetNorth", resetNorth)
         .put("topCss", topCss)

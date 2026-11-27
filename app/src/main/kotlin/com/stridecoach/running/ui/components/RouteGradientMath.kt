@@ -5,6 +5,7 @@ import com.stridecoach.running.core.domain.engine.LatLon
 import com.stridecoach.running.core.domain.engine.PaceZoneClassifier
 import com.stridecoach.running.core.domain.engine.ReplayHead
 import com.stridecoach.running.core.domain.model.TrackPoint
+import org.maplibre.geojson.Point
 import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.sqrt
@@ -17,6 +18,7 @@ internal data class PaceStop(val frac: Double, val hex: String)
 
 internal data class PreparedRoute(
     val pts: List<TrackPoint>,
+    val mapPoints: List<Point>,
     val geoHash: Int,
     val cumFrac: DoubleArray,
     val totalMerc: Double,
@@ -29,18 +31,19 @@ internal fun isValidCoord(lat: Double, lon: Double): Boolean =
 
 internal fun prepareRoute(raw: List<TrackPoint>, refPace: Int, smooth: Boolean): PreparedRoute {
     val vp = raw.filter { isValidCoord(it.latitude, it.longitude) }
+    val mp = vp.map { Point.fromLngLat(it.longitude, it.latitude) }
     val gh = computePtsGeoHash(vp)
     if (vp.size < 2) {
         val b = vp.firstOrNull()?.let { p ->
             val ll = LatLon(p.latitude, p.longitude)
             ll to ll
         }
-        return PreparedRoute(vp, gh, DoubleArray(vp.size), 0.0, b, emptyList())
+        return PreparedRoute(vp, mp, gh, DoubleArray(vp.size), 0.0, b, emptyList())
     }
     val (cum, tot) = buildMercCum(vp)
     val b = computeBounds(vp)
     val stops = buildPaceStops(vp, cum, refPace, smooth)
-    return PreparedRoute(vp, gh, cum, tot, b, stops)
+    return PreparedRoute(vp, mp, gh, cum, tot, b, stops)
 }
 
 internal fun headProgressFrac(route: PreparedRoute, head: ReplayHead?): Double {

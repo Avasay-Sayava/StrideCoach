@@ -191,26 +191,21 @@ fun RunDetailMapScreen(
     LaunchedEffect(run.encodedPolyline, run.isSnapped) { hiRange = null }
 
     val totalMs = pts.lastOrNull()?.elapsedMillis?.coerceAtLeast(1_000L) ?: run.durationMillis.coerceAtLeast(1_000L)
-    val liveIs3d = rememberUpdatedState(is3d)
     LaunchedEffect(playing, run.id, totalMs) {
         if (!playing) return@LaunchedEffect
         var prevNs = withFrameNanos { it }
         var curProg = prog
-        var wallMs = 0f
         while (playing) {
             val nowNs = withFrameNanos { it }
             val dtMs = ((nowNs - prevNs).coerceIn(0L, 100_000_000L)) / 1_000_000f
             prevNs = nowNs
-            wallMs += dtMs
             val next = curProg + ((dtMs * liveMult.value) / totalMs.toFloat())
             curProg = next
-            val minStepMs = if (liveIs3d.value) 32f else 16f
             if (next >= 1f) {
                 prog = 1f
                 playing = false
-            } else if (wallMs >= minStepMs) {
+            } else {
                 prog = next
-                wallMs = 0f
             }
         }
     }
@@ -331,6 +326,7 @@ fun RunDetailMapScreen(
                 bottomPadDp = 252,
                 recenterToken = recenterTick,
                 playing = playing,
+                playbackRatePerSec = if (playing) mult / (totalMs / 1000f) else 0f,
                 northLockedInFollow = northLocked,
                 resetNorthToken = resetNorthTick,
                 onUserManualPan = { camMode = MapCameraMode.FREE_PAN },

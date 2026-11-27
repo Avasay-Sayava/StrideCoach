@@ -161,6 +161,7 @@ fun VectorRouteMap(
     topHudDp: Int = 128,
     recenterToken: Int = 0,
     playing: Boolean = false,
+    playbackRatePerSec: Float = 0f,
     northLockedInFollow: Boolean = false,
     resetNorthToken: Int = 0,
     onUserManualPan: () -> Unit = {},
@@ -218,6 +219,7 @@ fun VectorRouteMap(
             hiBottomPx = effectiveHiBottomPx,
             recenterToken = recenterToken,
             playing = playing,
+            playbackRatePerSec = playbackRatePerSec,
             northLockedInFollow = northLockedInFollow,
             resetNorthToken = resetNorthToken,
             onUserManualPan = onUserManualPan,
@@ -440,7 +442,7 @@ private fun installRouteLineLayers(st: Style) {
         LineLayer("pace-layer", "pace-src").withProperties(
             lineColor(Color.parseColor("#926EE4")),
             lineWidth(5.4f),
-            lineCap(Property.LINE_CAP_ROUND),
+            lineCap(Property.LINE_CAP_BUTT),
             lineJoin(Property.LINE_JOIN_ROUND)
         )
     )
@@ -657,6 +659,7 @@ private fun syncActiveAndPace(
     colorByPace: Boolean
 ) {
     val layer = st.getLayerAs<LineLayer>("pace-layer") ?: return
+    val src = st.getSourceAs<GeoJsonSource>("pace-src") ?: return
     val frac = headProgressFrac(prep, head)
     if (prep.pts.size < 2 || frac <= 0.0005) {
         if (h.lastPaceOpacity != 0f) {
@@ -666,56 +669,85 @@ private fun syncActiveAndPace(
         h.lastPaceRenderKey = "${prep.geoHash}_off"
         return
     }
+    val stopSig = "${prep.stops.size}_${prep.stops.firstOrNull()?.hex}_${prep.stops.lastOrNull()?.hex}"
+    if (head == null || frac >= 0.999) {
+        val fullKey = "${prep.geoHash}_full_${colorByPace}_$stopSig"
+        if (fullKey == h.lastPaceRenderKey) return
+        h.lastPaceRenderKey = fullKey
+        src.setGeoJson(FeatureCollection.fromFeature(Feature.fromGeometry(LineString.fromLngLats(prep.mapPoints))))
+        if (h.lastPaceOpacity != 1f) {
+            h.lastPaceOpacity = 1f
+            layer.setProperties(lineOpacity(1f))
+        }
+        layer.setProperties(lineGradient(buildPaceGradientExpr(prep.stops, 1.0, colorByPace)))
+        return
+    }
+    val slice = slicePointsToHead(prep.mapPoints, head)
+    if (slice.size < 2) {
+        if (h.lastPaceOpacity != 0f) {
+            h.lastPaceOpacity = 0f
+            layer.setProperties(lineOpacity(0f))
+        }
+        return
+    }
+    val liveKey = "${prep.geoHash}_${colorByPace}_${stopSig}_${head.lat}_${head.lon}"
+    if (liveKey == h.lastPaceRenderKey) return
+    h.lastPaceRenderKey = liveKey
+    src.setGeoJson(FeatureCollection.fromFeature(Feature.fromGeometry(LineString.fromLngLats(slice))))
     if (h.lastPaceOpacity != 1f) {
         h.lastPaceOpacity = 1f
         layer.setProperties(lineOpacity(1f))
     }
-    val qFrac = if (frac >= 0.999) 1000 else (frac * 400).toInt()
-    val stopSig = "${prep.stops.size}_${prep.stops.firstOrNull()?.hex}_${prep.stops.lastOrNull()?.hex}"
-    val paceKey = "${prep.geoHash}_${colorByPace}_${stopSig}_$qFrac"
-    if (paceKey == h.lastPaceRenderKey) return
-
-    val nowMs = android.os.SystemClock.uptimeMillis()
-    if (head != null && qFrac < 1000 && nowMs - h.lastPaceGeoPushMs < 48L && h.lastPaceRenderKey.isNotEmpty()) return
-    h.lastPaceRenderKey = paceKey
-    h.lastPaceGeoPushMs = nowMs
     layer.setProperties(lineGradient(buildPaceGradientExpr(prep.stops, frac, colorByPace)))
+}
+
+private fun slicePointsToHead(pts: List<Point>, head: ReplayHead): List<Point> {
+    val lastIdx = head.baseIdx.coerceIn(0, pts.lastIndex)
+    val out = ArrayList<Point>(lastIdx + 2)
+    for (i in 0..lastIdx) out.add(pts[i])
+    val last = out.last()
+    if (kotlin.math.abs(head.lon - last.longitude()) + kotlin.math.abs(head.lat - last.latitude()) > 1e-8) {
+        out.add(Point.fromLngLat(head.lon, head.lat))
+    }
+    return out
 }
 
 private fun buildPaceGradientExpr(stops: List<PaceStop>, frac: Double, colorByPace: Boolean): Expression {
     if (!colorByPace || stops.isEmpty()) {
         val purple = Expression.color(Color.parseColor("#926EE4"))
-        if (frac >= 0.999) return Expression.interpolate(Expression.linear(), Expression.lineProgress(), Expression.stop(0.0, purple), Expression.stop(1.0, purple))
-        val end = frac.coerceIn(0.002, 0.9988)
-        return Expression.interpolate(
-            Expression.linear(),
-            Expression.lineProgress(),
-            Expression.stop(0.0, purple),
-            Expression.stop(end, purple),
-            Expression.stop((end + 0.0006).coerceAtMost(1.0), Expression.rgba(0, 0, 0, 0))
-        )
+        return Expression.interpolate(Expression.linear(), Expression.lineProgress(), Expression.stop(0.0, purple), Expression.stop(1.0, purple))
     }
-    val exprStops = ArrayList<Expression.Stop>(stops.size + 3)
-    if (frac >= 0.999) {
-        for (s in stops) exprStops.add(Expression.stop(s.frac, Expression.color(Color.parseColor(s.hex))))
-        if (stops.last().frac < 0.9999) exprStops.add(Expression.stop(1.0, Expression.color(Color.parseColor(stops.last().hex))))
-        return Expression.interpolate(Expression.linear(), Expression.lineProgress(), *exprStops.toTypedArray())
-    }
-    val fEnd = frac.coerceIn(0.002, 0.9988)
+    val exprStops = ArrayList<Expression.Stop>(stops.size + 2)
+    val span = frac.coerceIn(0.0005, 1.0)
     var prevT = -1.0
-    var tailHex = stops[0].hex
     for (s in stops) {
-        if (s.frac >= fEnd - 0.0005) break
-        if (s.frac > prevT + 0.0001) {
-            exprStops.add(Expression.stop(s.frac, Expression.color(Color.parseColor(s.hex))))
-            prevT = s.frac
+        if (s.frac >= span - 1e-5) break
+        val normT = (s.frac / span).coerceIn(0.0, 0.999)
+        if (normT > prevT + 0.0002) {
+            exprStops.add(Expression.stop(normT, Expression.color(Color.parseColor(s.hex))))
+            prevT = normT
         }
-        tailHex = s.hex
     }
-    if (prevT < 0.0) exprStops.add(Expression.stop(0.0, Expression.color(Color.parseColor(stops[0].hex))))
-    exprStops.add(Expression.stop(fEnd, Expression.color(Color.parseColor(tailHex))))
-    exprStops.add(Expression.stop((fEnd + 0.0006).coerceAtMost(1.0), Expression.rgba(0, 0, 0, 0)))
+    if (exprStops.isEmpty()) {
+        exprStops.add(Expression.stop(0.0, Expression.color(Color.parseColor(stops[0].hex))))
+    }
+    exprStops.add(Expression.stop(1.0, Expression.color(interpolateStopColor(stops, span))))
     return Expression.interpolate(Expression.linear(), Expression.lineProgress(), *exprStops.toTypedArray())
+}
+
+private fun interpolateStopColor(stops: List<PaceStop>, frac: Double): Int {
+    if (frac <= stops[0].frac) return Color.parseColor(stops[0].hex)
+    val last = stops.last()
+    if (frac >= last.frac) return Color.parseColor(last.hex)
+    for (i in 1 until stops.size) {
+        if (frac <= stops[i].frac) {
+            val a = stops[i - 1]
+            val b = stops[i]
+            val t = ((frac - a.frac) / (b.frac - a.frac).coerceAtLeast(1e-6)).toFloat()
+            return blendArgb(Color.parseColor(a.hex), Color.parseColor(b.hex), t)
+        }
+    }
+    return Color.parseColor(last.hex)
 }
 
 private fun syncTrimSlices(

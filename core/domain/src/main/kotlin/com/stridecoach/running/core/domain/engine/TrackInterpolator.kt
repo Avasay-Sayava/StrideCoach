@@ -82,12 +82,20 @@ object TrackInterpolator {
         val grade = localGrade(pts, i0)
         val cad = p0.cadenceSpm ?: p1.cadenceSpm ?: 0
         val km = (dist / 1000.0).toInt() + 1
-        val brg = interpBearing(
-            p0.bearingDegrees ?: GeoMath.bearingDegrees(p0.latitude, p0.longitude, p1.latitude, p1.longitude),
-            p1.bearingDegrees ?: GeoMath.bearingDegrees(p0.latitude, p0.longitude, p1.latitude, p1.longitude),
-            t
-        )
+        val brg = lookAheadBearing(pts, i0, lat, lon)
         return ReplayHead(i0, lat, lon, targetMs, dist, pace, speedKmh, avgPace, alt, grade, cad, km, brg)
+    }
+
+    private fun lookAheadBearing(pts: List<TrackPoint>, startIdx: Int, lat: Double, lon: Double): Float {
+        val baseD = pts[startIdx].cumulativeDistanceMeters
+        var target = pts.last()
+        for (i in (startIdx + 1) until pts.size) {
+            if (pts[i].cumulativeDistanceMeters - baseD >= 35.0) {
+                target = pts[i]
+                break
+            }
+        }
+        return GeoMath.bearingDegrees(lat, lon, target.latitude, target.longitude)
     }
 
     private fun interpAlt(a0: Double?, a1: Double?, t: Double): Double? {
@@ -108,11 +116,6 @@ object TrackInterpolator {
             }
         }
         return 0f
-    }
-
-    private fun interpBearing(a: Float, b: Float, t: Double): Float {
-        val diff = ((b - a + 540f) % 360f) - 180f
-        return ((a + diff * t.toFloat()) % 360f + 360f) % 360f
     }
 
     private fun findIdx(pts: List<TrackPoint>, targetMs: Long): Int {

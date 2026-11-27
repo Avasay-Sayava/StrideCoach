@@ -57,10 +57,14 @@
     cachedGuide: [],
     // Playback smooth damping state
     playing: false,
+    fracRate: 0.0,
     targetFrac: 1.0,
     smoothFrac: 1.0,
     targetHead: null,
     smoothHead: null,
+    routePoly: null,
+    headTrace: [],
+    lastScreenHead: null,
     targetBearing: 0.0,
     smoothCamCenter: null,
     smoothCamBearing: 0.0,
@@ -95,6 +99,40 @@
     var tiles = tr.sourceCache.getRenderableTiles();
     for (var i = 0; i < tiles.length; i++) tiles[i].rtt = [];
     window.__scPerf.rttRebuilds++;
+  }
+
+  function sampleRouteAtFrac(frac) {
+    var rp = state.routePoly;
+    if (!rp || !rp.pts || rp.pts.length === 0) return null;
+    var pts = rp.pts, cum = rp.cum, coords = rp.coords;
+    var n = pts.length;
+    if (n === 1 || frac <= 0) return { x: pts[0].x, y: pts[0].y, z: pts[0].z, lon: coords[0][0], lat: coords[0][1] };
+    if (frac >= 1) return { x: pts[n - 1].x, y: pts[n - 1].y, z: pts[n - 1].z, lon: coords[n - 1][0], lat: coords[n - 1][1] };
+    var lo = 0, hi = n - 2, idx = 0;
+    while (lo <= hi) {
+      var mid = (lo + hi) >>> 1;
+      if (cum[mid] <= frac) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    var c0 = cum[idx], c1 = cum[idx + 1];
+    var span = c1 - c0;
+    var t = span > 1e-12 ? Math.max(0.0, Math.min(1.0, (frac - c0) / span)) : 0.0;
+    var a = pts[idx], b = pts[idx + 1];
+    var ca = coords[idx], cb = coords[idx + 1];
+    return {
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t,
+      lon: ca[0] + (cb[0] - ca[0]) * t,
+      lat: ca[1] + (cb[1] - ca[1]) * t
+    };
+  }
+
+  function lookAheadRouteBearing(frac, fallbackBrg) {
+    var a = sampleRouteAtFrac(frac);
+    var b = sampleRouteAtFrac(Math.min(1.0, frac + 0.008));
+    if (!a || !b || Math.hypot(b.x - a.x, b.y - a.y) < 1e-8) return fallbackBrg || 0.0;
+    var deg = Math.atan2(b.x - a.x, a.y - b.y) * 180.0 / Math.PI;
+    return ((deg % 360.0) + 360.0) % 360.0;
   }
 
   function hexToRgb01(hex) {
@@ -210,8 +248,9 @@
         if (!state.routeVboDirty || !vbo) return;
         state.routeVboDirty = false;
         var base = state.cachedBase;
-        if (!base || base.length < 2) { vertCount = 0; return; }
+        if (!base || base.length < 2) { vertCount = 0; state.routePoly = null; return; }
         var mcPts = [];
+        var llPts = [];
         var maxElev = 0;
         for (var i = 0; i < base.length; i++) {
           var lon = base[i][0], lat = base[i][1];
@@ -226,12 +265,14 @@
                 var ie = getElevMeters(map, ilon, ilat);
                 if (ie > maxElev) maxElev = ie;
                 mcPts.push(maplibregl.MercatorCoordinate.fromLngLat([ilon, ilat], ie + 2.5));
+                llPts.push([ilon, ilat]);
               }
             }
           }
           var ev = getElevMeters(map, lon, lat);
           if (ev > maxElev) maxElev = ev;
           mcPts.push(maplibregl.MercatorCoordinate.fromLngLat([lon, lat], ev + 2.5));
+          llPts.push([lon, lat]);
         }
         if (maxElev <= 0.01 && map.terrain && !demRetryTimer) {
           demRetryTimer = setTimeout(function() {
@@ -244,14 +285,17 @@
         originY = mcPts[0].y;
         var cCenter = map.getCenter ? map.getCenter() : null;
         if (cCenter) state.lastVboCenter = [cCenter.lng, cCenter.lat];
-        console.log('[SC_VBO] pts=' + mcPts.length + ' e0=' + getElevMeters(map, base[0][0], base[0][1]).toFixed(1) + ' eLast=' + getElevMeters(map, base[base.length - 1][0], base[base.length - 1][1]).toFixed(1) + ' camElev=' + (((map.transform && map.transform.elevation) || 0).toFixed(1)) + ' zoom=' + map.transform.tileZoom);
-        var cum = new Float32Array(mcPts.length);
+        var cum = new Float64Array(mcPts.length);
         var tot = 0;
         for (var j = 1; j < mcPts.length; j++) {
           tot += Math.hypot(mcPts[j].x - mcPts[j - 1].x, mcPts[j].y - mcPts[j - 1].y);
           cum[j] = tot;
         }
         tot = Math.max(1e-12, tot);
+        var fracs = new Float64Array(mcPts.length);
+        for (var fi = 0; fi < mcPts.length; fi++) fracs[fi] = cum[fi] / tot;
+        fracs[mcPts.length - 1] = 1.0;
+        state.routePoly = { pts: mcPts, cum: fracs, coords: llPts };
         var stride = 10;
         var data = new Float32Array(mcPts.length * 2 * stride);
         var idx = 0;
@@ -261,7 +305,7 @@
           var dx = b.x - a.x, dy = b.y - a.y;
           var len = Math.max(1e-12, Math.hypot(dx, dy));
           var nx = -dy / len, ny = dx / len;
-          var frac = cum[k] / tot;
+          var frac = fracs[k];
           var rgb = colorAtFrac(state.stops, frac);
           var p = mcPts[k];
           var rx = p.x - originX, ry = p.y - originY;
@@ -324,7 +368,7 @@
 
   function createHead3dLayer() {
     var prog = null, vbo = null;
-    var locExt, uMat, uCenter, uRad, uVp;
+    var locExt, uClipCenter, uRad, uVp;
     return {
       id: 'sc-head-3d',
       type: 'custom',
@@ -332,15 +376,13 @@
       onAdd: function(map, gl) {
         var vs = [
           'attribute vec2 a_ext;',
-          'uniform mat4 u_matrix;',
-          'uniform vec3 u_center;',
+          'uniform vec4 u_clipCenter;',
           'uniform float u_radPx;',
           'uniform vec2 u_vp;',
           'varying vec2 v_uv;',
           'void main() {',
-          '  vec4 c = u_matrix * vec4(u_center, 1.0);',
-          '  vec2 off = a_ext * (u_radPx * 2.0 / u_vp) * c.w;',
-          '  gl_Position = vec4(c.xy + off, c.z - 0.0003 * c.w, c.w);',
+          '  vec2 off = a_ext * (u_radPx * 2.0 / u_vp) * u_clipCenter.w;',
+          '  gl_Position = vec4(u_clipCenter.xy + off, u_clipCenter.z - 0.0003 * u_clipCenter.w, u_clipCenter.w);',
           '  v_uv = a_ext;',
           '}'
         ].join('\n');
@@ -362,8 +404,7 @@
         ].join('\n');
         prog = compileProgram(gl, vs, fs);
         locExt = gl.getAttribLocation(prog, 'a_ext');
-        uMat = gl.getUniformLocation(prog, 'u_matrix');
-        uCenter = gl.getUniformLocation(prog, 'u_center');
+        uClipCenter = gl.getUniformLocation(prog, 'u_clipCenter');
         uRad = gl.getUniformLocation(prog, 'u_radPx');
         uVp = gl.getUniformLocation(prog, 'u_vp');
         vbo = gl.createBuffer();
@@ -377,11 +418,32 @@
       },
       render: function(gl, matrix) {
         var map = state.map;
-        var pt = state.smoothHead;
-        if (!map || !prog || !state.showHead || !pt) return;
+        if (!map || !prog || !state.showHead) return;
         var camElev = (map.transform && map.transform.elevation) || 0;
-        var elev = getElevMeters(map, pt[0], pt[1]) + 2.6 - camElev;
-        var mc = maplibregl.MercatorCoordinate.fromLngLat([pt[0], pt[1]], elev);
+        var wx, wy, wz;
+        var s = state.routePoly ? sampleRouteAtFrac(state.smoothFrac) : null;
+        if (s) {
+          var oz = -maplibregl.MercatorCoordinate.fromLngLat(map.getCenter(), camElev).z;
+          wx = s.x; wy = s.y; wz = s.z + oz;
+        } else if (state.smoothHead) {
+          var pt = state.smoothHead;
+          var mc = maplibregl.MercatorCoordinate.fromLngLat([pt[0], pt[1]], getElevMeters(map, pt[0], pt[1]) + 2.6 - camElev);
+          wx = mc.x; wy = mc.y; wz = mc.z;
+        } else {
+          return;
+        }
+
+        var cx = matrix[0] * wx + matrix[4] * wy + matrix[8] * wz + matrix[12];
+        var cy = matrix[1] * wx + matrix[5] * wy + matrix[9] * wz + matrix[13];
+        var cz = matrix[2] * wx + matrix[6] * wy + matrix[10] * wz + matrix[14];
+        var cw = matrix[3] * wx + matrix[7] * wy + matrix[11] * wz + matrix[15];
+        if (!isFinite(cw) || Math.abs(cw) < 1e-8) return;
+
+        var vpW = gl.drawingBufferWidth || 1;
+        var vpH = gl.drawingBufferHeight || 1;
+        if (state.playing && state.headTrace.length < 240) {
+          state.headTrace.push([((cx / cw) + 1.0) * 0.5 * vpW, (1.0 - (cy / cw)) * 0.5 * vpH]);
+        }
 
         gl.useProgram(prog);
         gl.depthMask(false);
@@ -392,10 +454,9 @@
         gl.vertexAttribPointer(locExt, 2, gl.FLOAT, false, 0, 0);
 
         var dpr = map.getPixelRatio ? map.getPixelRatio() : 1;
-        gl.uniformMatrix4fv(uMat, false, matrix);
-        gl.uniform3f(uCenter, mc.x, mc.y, mc.z);
+        gl.uniform4f(uClipCenter, cx, cy, cz, cw);
         gl.uniform1f(uRad, 14.0 * dpr);
-        gl.uniform2f(uVp, gl.drawingBufferWidth || 1, gl.drawingBufferHeight || 1);
+        gl.uniform2f(uVp, vpW, vpH);
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
         gl.depthMask(true);
@@ -711,6 +772,21 @@
     return ((cur + diff * alpha) % 360.0 + 360.0) % 360.0;
   }
 
+  function measureTraceJitter(pts) {
+    if (!pts || pts.length < 3) return 0;
+    var maxLatDev = 0;
+    for (var i = 1; i < pts.length - 1; i++) {
+      var a = pts[i - 1], b = pts[i], c = pts[i + 1];
+      var vx = c[0] - a[0], vy = c[1] - a[1];
+      var len = Math.hypot(vx, vy);
+      if (len > 0.25) {
+        var perp = Math.abs((b[0] - a[0]) * vy - (b[1] - a[1]) * vx) / len;
+        if (perp > maxLatDev) maxLatDev = perp;
+      }
+    }
+    return maxLatDev;
+  }
+
   function stepPlaybackRaf(now) {
     var map = state.map;
     if (!map || !state.styleReady || !state.playing) {
@@ -719,13 +795,20 @@
     }
     var dt = state.lastRafMs > 0 ? Math.min(0.05, (now - state.lastRafMs) / 1000.0) : 0.016;
     state.lastRafMs = now;
-    var alpha = 1.0 - Math.exp(-dt * 12.0);
-    state.smoothFrac += (state.targetFrac - state.smoothFrac) * alpha;
-    if (state.targetHead) {
+    if (state.fracRate > 0) {
+      state.smoothFrac = Math.min(1.0, state.smoothFrac + state.fracRate * dt);
+    }
+    var phaseAlpha = 1.0 - Math.exp(-dt * 6.0);
+    state.smoothFrac += (state.targetFrac - state.smoothFrac) * phaseAlpha;
+    var rSample = state.routePoly ? sampleRouteAtFrac(state.smoothFrac) : null;
+    if (rSample) {
+      state.smoothHead = [rSample.lon, rSample.lat];
+    } else if (state.targetHead) {
+      var hAlpha = 1.0 - Math.exp(-dt * 12.0);
       if (!state.smoothHead) state.smoothHead = [state.targetHead[0], state.targetHead[1]];
       else {
-        state.smoothHead[0] += (state.targetHead[0] - state.smoothHead[0]) * alpha;
-        state.smoothHead[1] += (state.targetHead[1] - state.smoothHead[1]) * alpha;
+        state.smoothHead[0] += (state.targetHead[0] - state.smoothHead[0]) * hAlpha;
+        state.smoothHead[1] += (state.targetHead[1] - state.smoothHead[1]) * hAlpha;
       }
     }
     var f = state.lastFrame;
@@ -733,13 +816,9 @@
     if (f && f.camMode === 'FOLLOW_RUNNER' && state.smoothHead && el && el.clientWidth > 0) {
       var topPad = Math.min(Math.max(0, Math.round(f.topCss)), Math.round(el.clientHeight * 0.42));
       var botPad = Math.min(Math.max(0, Math.round(f.botCss)), Math.round(el.clientHeight * 0.44));
-      if (!state.smoothCamCenter) state.smoothCamCenter = [state.smoothHead[0], state.smoothHead[1]];
-      else {
-        var camAlpha = 1.0 - Math.exp(-dt * 9.0);
-        state.smoothCamCenter[0] += (state.smoothHead[0] - state.smoothCamCenter[0]) * camAlpha;
-        state.smoothCamCenter[1] += (state.smoothHead[1] - state.smoothCamCenter[1]) * camAlpha;
-      }
-      state.smoothCamBearing = lerpAngle(state.smoothCamBearing, state.targetBearing, 1.0 - Math.exp(-dt * 7.0));
+      state.smoothCamCenter = [state.smoothHead[0], state.smoothHead[1]];
+      var tgtBrg = f.northLocked ? 0.0 : (state.routePoly ? lookAheadRouteBearing(state.smoothFrac, state.targetBearing) : state.targetBearing);
+      state.smoothCamBearing = lerpAngle(state.smoothCamBearing, tgtBrg, 1.0 - Math.exp(-dt * 6.0));
       map.jumpTo({
         center: state.smoothCamCenter,
         zoom: Math.max(map.getZoom(), 16.4),
@@ -757,17 +836,21 @@
     if (isPlaying && !state.playing) {
       state.playing = true;
       state.lastRafMs = 0;
+      state.headTrace = [];
       window.__scPerf.playStartMs = Date.now();
       window.__scPerf.playFrames = 0;
       if (!state.rafId) state.rafId = requestAnimationFrame(stepPlaybackRaf);
     } else if (!isPlaying && state.playing) {
       state.playing = false;
+      state.fracRate = 0.0;
       if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = 0; }
       state.smoothFrac = state.targetFrac;
       if (state.targetHead) state.smoothHead = [state.targetHead[0], state.targetHead[1]];
       var elapsed = Math.max(1, Date.now() - window.__scPerf.playStartMs);
       var fps = (window.__scPerf.playFrames * 1000.0 / elapsed).toFixed(1);
+      var maxDev = measureTraceJitter(state.headTrace).toFixed(2);
       console.log('[SC_PERF] fps=' + fps + ' playFrames=' + window.__scPerf.playFrames + ' ms=' + elapsed + ' rttRebuilds=' + window.__scPerf.rttRebuilds);
+      console.log('[SC_HEAD_TRACE] maxLateralPx=' + maxDev + ' samples=' + state.headTrace.length);
       if (state.map && state.map.triggerRepaint) state.map.triggerRepaint();
     }
   }
@@ -845,8 +928,9 @@
     state.colorByPace = !!f.colorByPace;
     state.showHead = !!f.showHead;
     state.targetFrac = typeof f.frac === 'number' ? f.frac : 1.0;
+    state.fracRate = typeof f.fracRate === 'number' ? f.fracRate : 0.0;
     state.targetHead = f.head ? [f.head[0], f.head[1]] : null;
-    if (!f.playing) {
+    if (!f.playing || Math.abs(state.targetFrac - state.smoothFrac) > 0.04) {
       state.smoothFrac = state.targetFrac;
       state.smoothHead = state.targetHead ? [state.targetHead[0], state.targetHead[1]] : null;
     } else if (!state.smoothHead && state.targetHead) {
