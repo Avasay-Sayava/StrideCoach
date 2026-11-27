@@ -1,5 +1,13 @@
 package com.stridecoach.running.ui.components
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Looper
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -19,15 +27,16 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -38,14 +47,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.stridecoach.running.core.domain.engine.LatLon
 import com.stridecoach.running.ui.theme.KdeBg
 import com.stridecoach.running.ui.theme.KdeBgDeep
 import com.stridecoach.running.ui.theme.KdeBorder
 import com.stridecoach.running.ui.theme.KdeCardBg
 import com.stridecoach.running.ui.theme.KdeMuted
+import com.stridecoach.running.ui.theme.KdePurple
+import com.stridecoach.running.ui.theme.KdeSky
 import com.stridecoach.running.ui.theme.KdeText
 import com.stridecoach.running.ui.theme.PaceTooSlow
 import com.stridecoach.running.ui.theme.TabularNumberStyle
@@ -106,12 +121,16 @@ fun TelemetryStatStrip(
                         text = value,
                         style = MaterialTheme.typography.titleMedium.merge(TabularNumberStyle),
                         fontWeight = FontWeight.Bold,
-                        color = KdeText
+                        color = KdeText,
+                        maxLines = 1,
+                        softWrap = false
                     )
                     Text(
                         text = label.uppercase(),
                         style = MaterialTheme.typography.labelSmall,
-                        color = KdeMuted
+                        color = KdeMuted,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -120,20 +139,56 @@ fun TelemetryStatStrip(
 }
 
 @Composable
-fun KpiStatTile(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier,
-    accent: Color = KdeText
+fun TopTelemetryMapHud(
+    speedText: String?,
+    timeText: String,
+    paceText: String,
+    distText: String,
+    modifier: Modifier = Modifier
 ) {
-    StrideCard(modifier = modifier) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = KdeMuted)
-        Text(
-            value,
-            style = MaterialTheme.typography.headlineSmall.merge(TabularNumberStyle),
-            color = accent,
-            fontWeight = FontWeight.Bold
-        )
+    val entries = buildList {
+        if (speedText != null) add(speedText to "Speed")
+        add(timeText to "Time")
+        add(paceText to "Pace")
+        add(distText to "Dist")
+    }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = KdeCardBg.copy(alpha = 0.90f),
+        border = BorderStroke(1.dp, KdeBorder)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            entries.forEachIndexed { idx, (value, label) ->
+                val accent = when (idx) {
+                    0 -> if (speedText != null) KdeSky else KdeText
+                    entries.lastIndex -> KdePurple
+                    else -> KdeText
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = value,
+                        style = MaterialTheme.typography.labelLarge.merge(TabularNumberStyle),
+                        fontWeight = FontWeight.Bold,
+                        color = accent,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = label.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = KdeMuted,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -149,6 +204,8 @@ fun StatusPill(label: String, color: Color) {
             color = color,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
         )
     }
@@ -162,12 +219,13 @@ fun FloatingMapIconButton(
     tint: Color = KdeText
 ) {
     Surface(
+        onClick = onClick,
         shape = CircleShape,
-        color = KdeCardBg.copy(alpha = 0.90f),
+        color = KdeCardBg.copy(alpha = 0.92f),
         border = BorderStroke(1.dp, KdeBorder),
-        modifier = Modifier.size(42.dp)
+        modifier = Modifier.size(44.dp)
     ) {
-        IconButton(onClick = onClick) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(20.dp))
         }
     }
@@ -225,8 +283,62 @@ fun HoldToFinishButton(
                 text = if (prog > 0f) "Keep Holding…" else "Hold to Finish",
                 color = if (enabled) PaceTooSlow else KdeMuted,
                 style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
 }
+
+data class PassiveLocReading(
+    val latLon: LatLon,
+    val speedKmh: Float = 0f,
+    val accMeters: Float? = null
+)
+
+@Composable
+fun rememberPassiveUserLocation(enabled: Boolean): LatLon? =
+    rememberPassiveLocationReading(enabled)?.latLon
+
+@SuppressLint("MissingPermission")
+@Composable
+fun rememberPassiveLocationReading(enabled: Boolean): PassiveLocReading? {
+    val ctx = LocalContext.current
+    var loc by remember { mutableStateOf<PassiveLocReading?>(null) }
+
+    DisposableEffect(ctx, enabled) {
+        if (!enabled || !hasLocPermission(ctx)) {
+            loc = null
+            return@DisposableEffect onDispose {}
+        }
+        val mgr = ctx.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        if (mgr == null) return@DisposableEffect onDispose {}
+
+        val lastGps = runCatching { mgr.getLastKnownLocation(LocationManager.GPS_PROVIDER) }.getOrNull()
+        val lastNet = runCatching { mgr.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) }.getOrNull()
+        val init = listOfNotNull(lastGps, lastNet).maxByOrNull { it.time }
+        if (init != null) {
+            val spd = if (init.hasSpeed()) (init.speed * 3.6f).coerceAtLeast(0f) else 0f
+            loc = PassiveLocReading(LatLon(init.latitude, init.longitude), spd, init.accuracy)
+        }
+
+        val listener = LocationListener { next: Location ->
+            val spd = if (next.hasSpeed()) (next.speed * 3.6f).coerceAtLeast(0f) else 0f
+            loc = PassiveLocReading(LatLon(next.latitude, next.longitude), spd, next.accuracy)
+        }
+        runCatching {
+            if (mgr.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                mgr.requestLocationUpdates(LocationManager.GPS_PROVIDER, 4_000L, 5f, listener, Looper.getMainLooper())
+            } else if (mgr.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                mgr.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 6_000L, 10f, listener, Looper.getMainLooper())
+            }
+        }
+        onDispose { runCatching { mgr.removeUpdates(listener) } }
+    }
+    return loc
+}
+
+private fun hasLocPermission(ctx: Context): Boolean =
+    ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED

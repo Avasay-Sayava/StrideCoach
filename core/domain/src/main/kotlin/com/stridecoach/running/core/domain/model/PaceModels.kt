@@ -38,6 +38,12 @@ fun formatPace(secPerKm: Int): String {
     return "%d:%02d".format(mins, secs)
 }
 
+fun formatSpeedKmh(secPerKm: Int): String {
+    if (secPerKm <= 0) return "0.0 km/h"
+    val kmh = 3600.0 / secPerKm
+    return "%.1f km/h".format(kmh)
+}
+
 fun formatDuration(millis: Long): String {
     val totalSec = (millis.coerceAtLeast(0L)) / 1000L
     val hrs = totalSec / 3600L

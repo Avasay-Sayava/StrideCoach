@@ -1,6 +1,8 @@
 package com.stridecoach.running.core.tracking
 
+import android.content.Context
 import com.stridecoach.running.core.domain.engine.LiveWorkoutSnapshot
+import com.stridecoach.running.core.domain.model.ActivityKind
 import com.stridecoach.running.core.domain.model.ActivitySegmentType
 import com.stridecoach.running.core.domain.model.PaceStatus
 import com.stridecoach.running.core.domain.model.RunRecord
@@ -26,7 +28,13 @@ data class LiveTrackingState(
     val cadenceSpm: Int = 0,
     val actType: ActivitySegmentType = ActivitySegmentType.RUNNING,
     val gpsAccM: Float? = null,
-    val elevM: Int = 0
+    val elevM: Int = 0,
+    val activityKind: ActivityKind = ActivityKind.RUNNING,
+    val headingDeg: Float = 0f,
+    val strideStabilityPct: Int = 0,
+    val gyroActive: Boolean = false,
+    val currentSpeedKmh: Float = 0f,
+    val currentGradePct: Float = 0f
 ) {
     val currentPaceStatus: PaceStatus
         get() = snapshot?.paceStatus ?: PaceStatus.NO_SIGNAL
@@ -44,11 +52,21 @@ object TrackingSessionBus {
     @Volatile
     var pendingPlanDayId: String? = null
     @Volatile
+    var pendingActivityKind: ActivityKind = ActivityKind.RUNNING
+    @Volatile
     var voiceEnabled: Boolean = true
     @Volatile
     var hapticEnabled: Boolean = true
     @Volatile
     var autoPauseEnabled: Boolean = true
+    @Volatile
+    var gyroEnabled: Boolean = true
+    @Volatile
+    var slopeAdjustedPaceEnabled: Boolean = true
+    @Volatile
+    var widgetTapGuardEnabled: Boolean = true
+    @Volatile
+    var widgetUpdater: ((Context) -> Unit)? = null
 
     internal fun update(fn: (LiveTrackingState) -> LiveTrackingState) {
         val c = st.value

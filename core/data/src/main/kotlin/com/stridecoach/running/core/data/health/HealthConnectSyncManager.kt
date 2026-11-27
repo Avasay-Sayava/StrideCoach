@@ -14,6 +14,7 @@ import com.stridecoach.running.core.domain.engine.ActivitySegmentClassifier
 import com.stridecoach.running.core.domain.engine.EncodedPolylineCodec
 import com.stridecoach.running.core.domain.engine.GeoMath
 import com.stridecoach.running.core.domain.engine.LatLon
+import com.stridecoach.running.core.domain.model.ActivityKind
 import com.stridecoach.running.core.domain.model.RunRecord
 import com.stridecoach.running.core.domain.model.RunSource
 import com.stridecoach.running.core.domain.model.TrackPoint
@@ -26,7 +27,10 @@ import kotlin.math.roundToInt
 
 data class HealthSyncResult(
     val syncedWalkDays: Int,
-    val addedRuns: Int
+    val addedRuns: Int,
+    val addedWalks: Int = 0,
+    val addedCycles: Int = 0,
+    val addedOther: Int = 0
 )
 
 object HealthConnectSyncManager {
@@ -64,9 +68,13 @@ object HealthConnectSyncManager {
         val walks = readWalkLogs(client, granted, start, end)
         if (walks.isNotEmpty()) repo.mergeWalkLogs(walks)
 
-        val runs = readRuns(client, granted, start, end)
-        val added = if (runs.isNotEmpty()) repo.saveRunsDeduplicated(runs) else 0
-        return HealthSyncResult(walks.size, added)
+        val activities = readActivities(client, granted, start, end)
+        val addedTotal = if (activities.isNotEmpty()) repo.saveRunsDeduplicated(activities) else 0
+        val runsCnt = if (addedTotal > 0) activities.count { it.activityKind == ActivityKind.RUNNING } else 0
+        val walkCnt = if (addedTotal > 0) activities.count { it.activityKind == ActivityKind.WALKING } else 0
+        val cycCnt = if (addedTotal > 0) activities.count { it.activityKind == ActivityKind.CYCLING } else 0
+        val othCnt = if (addedTotal > 0) activities.count { it.activityKind == ActivityKind.HIKING || it.activityKind == ActivityKind.OTHER } else 0
+        return HealthSyncResult(walks.size, addedTotal, walkCnt, cycCnt, othCnt)
     }
 
     private suspend fun readWalkLogs(
@@ -109,7 +117,7 @@ object HealthConnectSyncManager {
         }
     }
 
-    private suspend fun readRuns(
+    private suspend fun readActivities(
         client: HealthConnectClient,
         granted: Set<String>,
         start: Instant,
@@ -121,14 +129,20 @@ object HealthConnectSyncManager {
             client.readRecords(ReadRecordsRequest(ExerciseSessionRecord::class, TimeRangeFilter.between(start, end))).records
         }.getOrDefault(emptyList())
 
-        val runningTypes = setOf(
-            ExerciseSessionRecord.EXERCISE_TYPE_RUNNING,
-            ExerciseSessionRecord.EXERCISE_TYPE_RUNNING_TREADMILL
-        )
-        return sessions.filter { it.exerciseType in runningTypes }.mapNotNull(::toRunRecord)
+        return sessions.mapNotNull { s -> mapKind(s.exerciseType)?.let { k -> toRunRecord(s, k) } }
     }
 
-    private fun toRunRecord(s: ExerciseSessionRecord): RunRecord? {
+    private fun mapKind(exerciseType: Int): ActivityKind? = when (exerciseType) {
+        ExerciseSessionRecord.EXERCISE_TYPE_RUNNING,
+        ExerciseSessionRecord.EXERCISE_TYPE_RUNNING_TREADMILL -> ActivityKind.RUNNING
+        ExerciseSessionRecord.EXERCISE_TYPE_WALKING -> ActivityKind.WALKING
+        ExerciseSessionRecord.EXERCISE_TYPE_BIKING,
+        ExerciseSessionRecord.EXERCISE_TYPE_BIKING_STATIONARY -> ActivityKind.CYCLING
+        ExerciseSessionRecord.EXERCISE_TYPE_HIKING -> ActivityKind.HIKING
+        else -> null
+    }
+
+    private fun toRunRecord(s: ExerciseSessionRecord, kind: ActivityKind): RunRecord? {
         val durMs = (s.endTime.toEpochMilli() - s.startTime.toEpochMilli()).coerceAtLeast(1_000L)
         if (durMs < 60_000L) return null
         val routeRes = s.exerciseRouteResult
@@ -142,22 +156,31 @@ object HealthConnectSyncManager {
         val pace = if (dist >= 100) ((durMs / 1000.0) / (dist / 1000.0)).roundToInt() else 0
         val segs = ActivitySegmentClassifier.classify(routePts)
         val elev = ActivitySegmentClassifier.computeElevationGain(routePts)
+        val defaultTitle = when (kind) {
+            ActivityKind.RUNNING -> "Synced Run"
+            ActivityKind.WALKING -> "Synced Walk"
+            ActivityKind.CYCLING -> "Synced Ride"
+            ActivityKind.HIKING -> "Synced Hike"
+            ActivityKind.OTHER -> "Synced Workout"
+        }
 
         return RunRecord(
-            id = "hc_${s.startTime.toEpochMilli()}",
+            id = "hc_${kind.name.lowercase()}_${s.startTime.toEpochMilli()}",
             startTimestampMillis = s.startTime.toEpochMilli(),
             distanceMeters = dist,
             durationMillis = durMs,
             paceSecondsPerKm = pace,
             caloriesBurned = ((dist / 1000.0) * 62.0).roundToInt(),
-            name = s.title?.takeIf { it.isNotBlank() } ?: "Synced Run",
+            name = s.title?.takeIf { it.isNotBlank() } ?: defaultTitle,
             description = s.notes.orEmpty(),
             encodedPolyline = poly,
+            rawEncodedPolyline = poly,
             splits = emptyList(),
             trackPoints = routePts,
             source = RunSource.HEALTH_CONNECT,
             elevGainM = elev,
-            segs = segs
+            segs = segs,
+            activityKind = kind
         )
     }
 

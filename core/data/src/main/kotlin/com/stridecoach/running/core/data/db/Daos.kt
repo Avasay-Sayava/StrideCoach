@@ -25,12 +25,20 @@ data class FullRunBundle(
 @Dao
 interface RunDao {
     @Transaction
-    @Query("SELECT * FROM runs ORDER BY startTimestampMillis DESC")
+    @Query("SELECT * FROM runs WHERE deletedAtMillis IS NULL ORDER BY startTimestampMillis DESC")
     fun observeRunsWithSplits(): Flow<List<RunWithSplits>>
 
     @Transaction
-    @Query("SELECT * FROM runs ORDER BY startTimestampMillis DESC")
+    @Query("SELECT * FROM runs WHERE deletedAtMillis IS NOT NULL ORDER BY deletedAtMillis DESC")
+    fun observeTrashedRunsWithSplits(): Flow<List<RunWithSplits>>
+
+    @Transaction
+    @Query("SELECT * FROM runs WHERE deletedAtMillis IS NULL ORDER BY startTimestampMillis DESC")
     suspend fun getAllRunsWithSplits(): List<RunWithSplits>
+
+    @Transaction
+    @Query("SELECT * FROM runs ORDER BY startTimestampMillis DESC")
+    suspend fun getAllRunsIncludingTrashed(): List<RunWithSplits>
 
     @Query("SELECT * FROM runs WHERE id = :runId LIMIT 1")
     suspend fun getRun(runId: String): RunEntity?
@@ -65,8 +73,17 @@ interface RunDao {
     @Query("DELETE FROM detected_segments WHERE runId = :runId")
     suspend fun deleteSegments(runId: String)
 
+    @Query("UPDATE runs SET deletedAtMillis = :deletedAt WHERE id = :runId")
+    suspend fun setRunDeleted(runId: String, deletedAt: Long?)
+
+    @Query("UPDATE runs SET deletedAtMillis = NULL WHERE deletedAtMillis IS NOT NULL")
+    suspend fun restoreAllTrashedRuns()
+
     @Query("DELETE FROM runs WHERE id = :runId")
     suspend fun deleteRun(runId: String)
+
+    @Query("DELETE FROM runs WHERE deletedAtMillis IS NOT NULL")
+    suspend fun emptyTrashedRuns()
 
     @Transaction
     suspend fun replaceRunFull(bundle: FullRunBundle) {
@@ -112,6 +129,9 @@ interface PlanDao {
     @Query("SELECT * FROM training_plans WHERE isActive = 1 LIMIT 1")
     fun observeActivePlan(): Flow<TrainingPlanEntity?>
 
+    @Query("SELECT * FROM training_plans WHERE isActive = 1 LIMIT 1")
+    suspend fun getActivePlan(): TrainingPlanEntity?
+
     @Query("SELECT * FROM planned_days WHERE planId = :planId ORDER BY dateEpochDay ASC")
     fun observeDays(planId: String): Flow<List<PlannedDayEntity>>
 
@@ -138,12 +158,27 @@ interface PlanDao {
 
 @Dao
 interface WorkoutTemplateDao {
-    @Query("SELECT * FROM workout_templates ORDER BY title ASC")
+    @Query("SELECT * FROM workout_templates WHERE deletedAtMillis IS NULL ORDER BY title ASC")
     fun observeTemplates(): Flow<List<WorkoutTemplateEntity>>
+
+    @Query("SELECT * FROM workout_templates WHERE deletedAtMillis IS NOT NULL ORDER BY deletedAtMillis DESC")
+    fun observeTrashedTemplates(): Flow<List<WorkoutTemplateEntity>>
+
+    @Query("SELECT * FROM workout_templates")
+    suspend fun getAllIncludingTrashed(): List<WorkoutTemplateEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(template: WorkoutTemplateEntity)
 
+    @Query("UPDATE workout_templates SET deletedAtMillis = :deletedAt WHERE id = :id")
+    suspend fun setDeleted(id: String, deletedAt: Long?)
+
+    @Query("UPDATE workout_templates SET deletedAtMillis = NULL WHERE deletedAtMillis IS NOT NULL")
+    suspend fun restoreAllTrashed()
+
     @Query("DELETE FROM workout_templates WHERE id = :id")
     suspend fun delete(id: String)
+
+    @Query("DELETE FROM workout_templates WHERE deletedAtMillis IS NOT NULL")
+    suspend fun emptyTrashed()
 }

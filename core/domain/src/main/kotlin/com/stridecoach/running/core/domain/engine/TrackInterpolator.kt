@@ -8,7 +8,14 @@ data class ReplayHead(
     val lon: Double,
     val elapsedMs: Long,
     val distM: Double,
-    val paceSec: Int
+    val paceSec: Int,
+    val speedKmh: Float = 0f,
+    val avgPaceSoFarSec: Int = 0,
+    val altitudeM: Double? = null,
+    val gradePct: Float = 0f,
+    val cadenceSpm: Int = 0,
+    val currentKm: Int = 1,
+    val bearingDeg: Float = 0f
 )
 
 object TrackInterpolator {
@@ -16,11 +23,44 @@ object TrackInterpolator {
         if (pts.isEmpty()) return null
         if (pts.size == 1 || targetMs <= pts.first().elapsedMillis) {
             val p = pts.first()
-            return ReplayHead(0, p.latitude, p.longitude, p.elapsedMillis, p.cumulativeDistanceMeters, toPace(p.speedMps))
+            val pace = toPace(p.speedMps)
+            return ReplayHead(
+                baseIdx = 0,
+                lat = p.latitude,
+                lon = p.longitude,
+                elapsedMs = p.elapsedMillis,
+                distM = p.cumulativeDistanceMeters,
+                paceSec = pace,
+                speedKmh = ((p.speedMps ?: 0f) * 3.6f).coerceAtLeast(0f),
+                avgPaceSoFarSec = pace,
+                altitudeM = p.altitudeMeters,
+                gradePct = 0f,
+                cadenceSpm = p.cadenceSpm ?: 0,
+                currentKm = 1,
+                bearingDeg = p.bearingDegrees ?: 0f
+            )
         }
         if (targetMs >= pts.last().elapsedMillis) {
             val p = pts.last()
-            return ReplayHead(pts.lastIndex, p.latitude, p.longitude, p.elapsedMillis, p.cumulativeDistanceMeters, toPace(p.speedMps))
+            val pace = toPace(p.speedMps)
+            val avgPace = if (p.cumulativeDistanceMeters > 15.0 && p.elapsedMillis > 0L) {
+                ((p.elapsedMillis / 1000.0) / (p.cumulativeDistanceMeters / 1000.0)).toInt()
+            } else pace
+            return ReplayHead(
+                baseIdx = pts.lastIndex,
+                lat = p.latitude,
+                lon = p.longitude,
+                elapsedMs = p.elapsedMillis,
+                distM = p.cumulativeDistanceMeters,
+                paceSec = pace,
+                speedKmh = ((p.speedMps ?: 0f) * 3.6f).coerceAtLeast(0f),
+                avgPaceSoFarSec = avgPace,
+                altitudeM = p.altitudeMeters,
+                gradePct = localGrade(pts, pts.lastIndex),
+                cadenceSpm = p.cadenceSpm ?: 0,
+                currentKm = (p.cumulativeDistanceMeters / 1000.0).toInt() + 1,
+                bearingDeg = p.bearingDegrees ?: 0f
+            )
         }
 
         val i0 = findIdx(pts, targetMs)
@@ -33,7 +73,46 @@ object TrackInterpolator {
         val lon = p0.longitude + (p1.longitude - p0.longitude) * t
         val dist = p0.cumulativeDistanceMeters + (p1.cumulativeDistanceMeters - p0.cumulativeDistanceMeters) * t
         val spd = interpSpeed(p0.speedMps, p1.speedMps, t)
-        return ReplayHead(i0, lat, lon, targetMs, dist, toPace(spd))
+        val pace = toPace(spd)
+        val speedKmh = ((spd ?: 0f) * 3.6f).coerceAtLeast(0f)
+        val avgPace = if (dist > 15.0 && targetMs > 0L) {
+            ((targetMs / 1000.0) / (dist / 1000.0)).toInt()
+        } else pace
+        val alt = interpAlt(p0.altitudeMeters, p1.altitudeMeters, t)
+        val grade = localGrade(pts, i0)
+        val cad = p0.cadenceSpm ?: p1.cadenceSpm ?: 0
+        val km = (dist / 1000.0).toInt() + 1
+        val brg = interpBearing(
+            p0.bearingDegrees ?: GeoMath.bearingDegrees(p0.latitude, p0.longitude, p1.latitude, p1.longitude),
+            p1.bearingDegrees ?: GeoMath.bearingDegrees(p0.latitude, p0.longitude, p1.latitude, p1.longitude),
+            t
+        )
+        return ReplayHead(i0, lat, lon, targetMs, dist, pace, speedKmh, avgPace, alt, grade, cad, km, brg)
+    }
+
+    private fun interpAlt(a0: Double?, a1: Double?, t: Double): Double? {
+        if (a0 == null && a1 == null) return null
+        val x0 = a0 ?: a1 ?: return null
+        val x1 = a1 ?: a0 ?: return null
+        return x0 + (x1 - x0) * t
+    }
+
+    private fun localGrade(pts: List<TrackPoint>, idx: Int): Float {
+        val endPt = pts[idx]
+        val endAlt = endPt.altitudeMeters ?: return 0f
+        for (k in (idx - 1) downTo (idx - 12).coerceAtLeast(0)) {
+            val d = endPt.cumulativeDistanceMeters - pts[k].cumulativeDistanceMeters
+            val startAlt = pts[k].altitudeMeters ?: continue
+            if (d >= 30.0 || k == 0) {
+                return TopographyPaceEngine.computeGradePct(endAlt - startAlt, d).toFloat()
+            }
+        }
+        return 0f
+    }
+
+    private fun interpBearing(a: Float, b: Float, t: Double): Float {
+        val diff = ((b - a + 540f) % 360f) - 180f
+        return ((a + diff * t.toFloat()) % 360f + 360f) % 360f
     }
 
     private fun findIdx(pts: List<TrackPoint>, targetMs: Long): Int {

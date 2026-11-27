@@ -20,26 +20,44 @@ import androidx.core.app.ServiceCompat
 import com.stridecoach.running.core.domain.engine.ActivitySegmentClassifier
 import com.stridecoach.running.core.domain.engine.CoachingEvent
 import com.stridecoach.running.core.domain.engine.EncodedPolylineCodec
+import com.stridecoach.running.core.domain.engine.ImuKinematicsAnalyzer
 import com.stridecoach.running.core.domain.engine.LatLon
+import com.stridecoach.running.core.domain.engine.TopographyPaceEngine
 import com.stridecoach.running.core.domain.engine.WorkoutStateMachine
+import com.stridecoach.running.core.domain.model.ActivityKind
 import com.stridecoach.running.core.domain.model.RunRecord
 import com.stridecoach.running.core.domain.model.RunSource
 import com.stridecoach.running.core.domain.model.RunSplit
 import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.core.domain.model.formatPace
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.math.roundToInt
 
 class RunTrackingService : Service(), LocationListener {
+    private val svcScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var tickerJob: Job? = null
+    @Volatile
+    private var lastMovingFixWallMs = 0L
+
     private var locMgr: LocationManager? = null
     private var coach: VoiceCoachEngine? = null
     private var steps: StepCounterTracker? = null
+    private var imu: ImuMotionTracker? = null
     private var wake: PowerManager.WakeLock? = null
     private var gps = GpsSignalProcessor()
     private var sm: WorkoutStateMachine? = null
 
     private var startMs = 0L
     private var paused = false
+    private var sessionKind = ActivityKind.RUNNING
     private val splits = mutableListOf<RunSplit>()
 
     override fun onCreate() {
@@ -51,7 +69,12 @@ class RunTrackingService : Service(), LocationListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, id: Int): Int {
         when (intent?.action) {
-            ACTION_START -> begin()
+            ACTION_START -> begin(TrackingSessionBus.pendingActivityKind)
+            ACTION_START_AUTO -> {
+                val rawKind = intent.getStringExtra(EXTRA_ACTIVITY_KIND)
+                val kind = runCatching { ActivityKind.valueOf(rawKind ?: "") }.getOrDefault(ActivityKind.RUNNING)
+                begin(kind)
+            }
             ACTION_PAUSE_RESUME -> togglePause()
             ACTION_NEXT_STEP -> nextStep()
             ACTION_STOP -> finish()
@@ -62,18 +85,30 @@ class RunTrackingService : Service(), LocationListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     @SuppressLint("MissingPermission")
-    private fun begin() {
+    private fun begin(kind: ActivityKind) {
         val w = TrackingSessionBus.pendingWorkout
         val dayId = TrackingSessionBus.pendingPlanDayId
+        sessionKind = kind
         startMs = System.currentTimeMillis()
         paused = false
         splits.clear()
         gps = GpsSignalProcessor()
         sm = WorkoutStateMachine(w)
         steps = StepCounterTracker(this).also { it.start() }
+        val useGyro = TrackingSessionBus.gyroEnabled
+        val imuStarted = if (useGyro) ImuMotionTracker(this).also { imu = it }.start() else false
 
         lockCpu()
-        TrackingSessionBus.update { LiveTrackingState(true, false, workout = w, planDayId = dayId) }
+        TrackingSessionBus.update {
+            LiveTrackingState(
+                isActive = true,
+                isPaused = false,
+                workout = w,
+                planDayId = dayId,
+                activityKind = sessionKind,
+                gyroActive = imuStarted
+            )
+        }
         val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         } else {
@@ -81,6 +116,8 @@ class RunTrackingService : Service(), LocationListener {
         }
         ServiceCompat.startForeground(this, NOTIF_ID, notif("GPS ready", "0.00 km • 00:00"), fgsType)
         locMgr?.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 2f, this)
+        TrackingSessionBus.widgetUpdater?.invoke(this)
+        startTickerLoop()
 
         sm?.currentStep()?.let { first ->
             coach?.handleEvent(
@@ -95,6 +132,7 @@ class RunTrackingService : Service(), LocationListener {
         paused = !paused
         TrackingSessionBus.update { it.copy(isPaused = paused) }
         pushNotif(if (paused) "Paused" else "Running", summary())
+        TrackingSessionBus.widgetUpdater?.invoke(this)
     }
 
     private fun nextStep() {
@@ -102,13 +140,18 @@ class RunTrackingService : Service(), LocationListener {
         val ev = m.advanceManual(gps.totalDistanceMeters(), gps.activeElapsedMillis())
         emitEvents(ev)
         pushNotif(m.currentStep()?.displayName() ?: "Open Run", summary())
+        TrackingSessionBus.widgetUpdater?.invoke(this)
     }
 
     private fun finish() {
+        tickerJob?.cancel()
+        tickerJob = null
         locMgr?.removeUpdates(this)
         steps?.stop()
+        imu?.stop()
         buildRun()?.let(TrackingSessionBus::emitRun)
         TrackingSessionBus.update { LiveTrackingState(false) }
+        TrackingSessionBus.widgetUpdater?.invoke(this)
         unlockCpu()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -124,16 +167,38 @@ class RunTrackingService : Service(), LocationListener {
             if (loc.hasSpeed()) loc.speed else null
         )
         val idx = sm?.currentStep()?.index
-        val cad = steps?.cadenceSpm?.value ?: 0
+        val stepCad = steps?.cadenceSpm?.value ?: 0
+        val cad = if (stepCad > 0) stepCad else (imu?.imuCadenceSpm?.value ?: 0)
         val (_, mv) = gps.process(fix, idx, paused, TrackingSessionBus.autoPauseEnabled, cad.takeIf { it > 0 })
+        val pts = gps.points()
+        val gradePct = TopographyPaceEngine.computeRollingGradePct(pts)
         val pace = gps.rollingPaceSecPerKm()
-        val res = sm?.onTick(gps.totalDistanceMeters(), gps.activeElapsedMillis(), pace)
+        val res = sm?.onTick(
+            gps.totalDistanceMeters(),
+            gps.activeElapsedMillis(),
+            pace,
+            slopeGradePct = gradePct,
+            slopeAdjustEnabled = TrackingSessionBus.slopeAdjustedPaceEnabled
+        )
         val snap = res?.first
         emitEvents(res?.second.orEmpty())
 
-        val pts = gps.points()
-        val kind = ActivitySegmentClassifier.classifyInstant(pts.lastOrNull()?.speedMps, cad, paused || mv != MovementState.MOVING)
+        val lastPt = pts.lastOrNull()
+        val fusedHeading = if (imu != null) {
+            ImuKinematicsAnalyzer.fuseHeading(
+                imu?.headingDeg?.value ?: 0f,
+                lastPt?.bearingDegrees,
+                lastPt?.speedMps ?: 0f
+            )
+        } else {
+            lastPt?.bearingDegrees ?: 0f
+        }
+        val kind = ActivitySegmentClassifier.classifyInstant(lastPt?.speedMps, cad, paused || mv != MovementState.MOVING)
         val gain = ActivitySegmentClassifier.computeElevationGain(pts)
+        val stability = imu?.strideStabilityPct?.value ?: 0
+        val spdKmh = ((lastPt?.speedMps ?: 0f) * 3.6f).coerceAtLeast(0f)
+        if ((lastPt?.speedMps ?: 0f) > 0.35f) lastMovingFixWallMs = System.currentTimeMillis()
+
         TrackingSessionBus.update {
             it.copy(
                 movementState = mv,
@@ -143,11 +208,16 @@ class RunTrackingService : Service(), LocationListener {
                 cadenceSpm = cad,
                 actType = kind,
                 gpsAccM = fix.accuracyMeters,
-                elevM = gain
+                elevM = gain,
+                headingDeg = fusedHeading,
+                strideStabilityPct = stability,
+                currentSpeedKmh = spdKmh,
+                currentGradePct = gradePct.toFloat()
             )
         }
-        val title = snap?.activeStep?.displayName() ?: TrackingSessionBus.state.value.workout?.title ?: "Live Run"
+        val title = snap?.activeStep?.displayName() ?: TrackingSessionBus.state.value.workout?.title ?: defaultTitle(sessionKind)
         pushNotif(title, summary())
+        TrackingSessionBus.widgetUpdater?.invoke(this)
     }
 
     private fun emitEvents(list: List<CoachingEvent>) {
@@ -167,11 +237,13 @@ class RunTrackingService : Service(), LocationListener {
         if (dist < 20 && dur < 5_000L) return null
 
         val pace = if (dist > 0) ((dur / 1000.0) / (dist / 1000.0)).roundToInt() else 0
-        val cals = ((dist / 1000.0) * 62.0).roundToInt()
+        val calFactor = if (sessionKind == ActivityKind.CYCLING) 32.0 else 62.0
+        val cals = ((dist / 1000.0) * calFactor).roundToInt()
         val poly = EncodedPolylineCodec.encode(pts.map { LatLon(it.latitude, it.longitude) })
         val st = TrackingSessionBus.state.value
         val segs = ActivitySegmentClassifier.classify(pts)
-        val gain = ActivitySegmentClassifier.computeElevationGain(pts)
+        val topo = TopographyPaceEngine.analyzeTrack(pts, pace.takeIf { it > 0 } ?: 330)
+        val gain = topo?.gainMeters ?: ActivitySegmentClassifier.computeElevationGain(pts)
         val totSteps = steps?.sessionSteps?.value ?: 0
         val avgCad = if (dur > 0L && totSteps > 0) ((totSteps / (dur / 60_000.0))).roundToInt() else 0
 
@@ -182,7 +254,7 @@ class RunTrackingService : Service(), LocationListener {
             durationMillis = dur,
             paceSecondsPerKm = pace,
             caloriesBurned = cals,
-            name = st.workout?.title ?: "Guided Run",
+            name = st.workout?.title ?: defaultTitle(sessionKind),
             description = "",
             encodedPolyline = poly,
             splits = splits.toList(),
@@ -193,8 +265,23 @@ class RunTrackingService : Service(), LocationListener {
             totalSteps = totSteps,
             avgCadenceSpm = avgCad,
             elevGainM = gain,
-            segs = segs
+            segs = segs,
+            activityKind = sessionKind,
+            rawEncodedPolyline = poly,
+            strideStabilityPct = imu?.strideStabilityPct?.value ?: 0,
+            elevLossM = topo?.lossMeters ?: 0,
+            minAltM = topo?.minAltMeters,
+            maxAltM = topo?.maxAltMeters,
+            gradeAdjustedPaceSec = topo?.gradeAdjustedPaceSec ?: 0
         )
+    }
+
+    private fun defaultTitle(k: ActivityKind): String = when (k) {
+        ActivityKind.RUNNING -> "Guided Run"
+        ActivityKind.WALKING -> "Outdoor Walk"
+        ActivityKind.CYCLING -> "Outdoor Ride"
+        ActivityKind.HIKING -> "Outdoor Hike"
+        ActivityKind.OTHER -> "Outdoor Workout"
     }
 
     private fun summary(): String {
@@ -255,23 +342,75 @@ class RunTrackingService : Service(), LocationListener {
     }
 
     override fun onDestroy() {
+        tickerJob?.cancel()
+        svcScope.cancel()
         locMgr?.removeUpdates(this)
         steps?.stop()
+        imu?.stop()
         coach?.shutdown()
         unlockCpu()
         super.onDestroy()
+    }
+
+    private fun startTickerLoop() {
+        tickerJob?.cancel()
+        tickerJob = svcScope.launch {
+            while (isActive && TrackingSessionBus.state.value.isActive) {
+                delay(1_000L)
+                if (!paused) refreshLiveTick()
+            }
+        }
+    }
+
+    private fun refreshLiveTick() {
+        val pace = gps.rollingPaceSecPerKm()
+        val pts = gps.points()
+        val gradePct = TopographyPaceEngine.computeRollingGradePct(pts)
+        val res = sm?.onTick(
+            gps.totalDistanceMeters(),
+            gps.activeElapsedMillis(),
+            pace,
+            slopeGradePct = gradePct,
+            slopeAdjustEnabled = TrackingSessionBus.slopeAdjustedPaceEnabled
+        )
+        val snap = res?.first ?: return
+        val staleMoving = System.currentTimeMillis() - lastMovingFixWallMs > 4_500L
+        val stepCad = steps?.cadenceSpm?.value ?: 0
+        val cad = if (stepCad > 0) stepCad else (imu?.imuCadenceSpm?.value ?: 0)
+        TrackingSessionBus.update { st ->
+            st.copy(
+                snapshot = snap,
+                steps = steps?.sessionSteps?.value ?: st.steps,
+                cadenceSpm = cad,
+                currentSpeedKmh = if (staleMoving) 0f else st.currentSpeedKmh
+            )
+        }
+        val title = snap.activeStep?.displayName()
+            ?: TrackingSessionBus.state.value.workout?.title
+            ?: defaultTitle(sessionKind)
+        pushNotif(title, summary())
+        TrackingSessionBus.widgetUpdater?.invoke(this)
     }
 
     companion object {
         const val CHANNEL = "stridecoach_tracking"
         const val NOTIF_ID = 4201
         const val ACTION_START = "com.stridecoach.running.action.START"
+        const val ACTION_START_AUTO = "com.stridecoach.running.action.START_AUTO"
         const val ACTION_PAUSE_RESUME = "com.stridecoach.running.action.PAUSE_RESUME"
         const val ACTION_NEXT_STEP = "com.stridecoach.running.action.NEXT_STEP"
         const val ACTION_STOP = "com.stridecoach.running.action.STOP"
+        const val EXTRA_ACTIVITY_KIND = "activity_kind"
 
         fun start(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, RunTrackingService::class.java).setAction(ACTION_START))
+        }
+
+        fun startAuto(ctx: Context, kind: ActivityKind) {
+            val i = Intent(ctx, RunTrackingService::class.java)
+                .setAction(ACTION_START_AUTO)
+                .putExtra(EXTRA_ACTIVITY_KIND, kind.name)
+            ctx.startForegroundService(i)
         }
 
         fun sendAction(ctx: Context, act: String) {

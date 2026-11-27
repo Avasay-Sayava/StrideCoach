@@ -2,16 +2,22 @@ package com.stridecoach.running.core.domain.engine
 
 import com.stridecoach.running.core.domain.model.RunSplit
 import com.stridecoach.running.core.domain.model.TrackPoint
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.roundToInt
 
 data class LatLon(val latitude: Double, val longitude: Double)
 
 object EncodedPolylineCodec {
     private const val SCALE = 1e5
+    private val decodeCache = ConcurrentHashMap<String, List<LatLon>>()
+    private val synthCache = ConcurrentHashMap<String, List<TrackPoint>>()
 
     fun encode(points: List<LatLon>): String {
         if (points.isEmpty()) return ""
-        val out = StringBuilder()
+        val out = StringBuilder(points.size * 6)
         var pLat = 0
         var pLon = 0
         for (pt in points) {
@@ -27,7 +33,8 @@ object EncodedPolylineCodec {
 
     fun decode(encoded: String): List<LatLon> {
         if (encoded.isEmpty()) return emptyList()
-        val pts = mutableListOf<LatLon>()
+        decodeCache[encoded]?.let { return it }
+        val pts = ArrayList<LatLon>(encoded.length / 5 + 4)
         var idx = 0
         var lat = 0
         var lon = 0
@@ -45,29 +52,109 @@ object EncodedPolylineCodec {
                 pts.add(LatLon(dLat, dLon))
             }
         }
+        if (decodeCache.size > 128) decodeCache.clear()
+        decodeCache[encoded] = pts
         return pts
     }
 
+    /**
+     * O(N) single-pass replay track synthesizer with precomputed split tables, cosine-blended
+     * speed transitions, corner-slowdown modulation, and bounded memoization.
+     */
     fun synthesizeReplayTrack(
         encodedPolyline: String,
         startTimestampMillis: Long,
         totalDurationMillis: Long,
         splits: List<RunSplit>
     ): List<TrackPoint> {
+        if (encodedPolyline.isEmpty()) return emptyList()
+        val cacheKey = "${encodedPolyline.hashCode()}_${encodedPolyline.length}_${startTimestampMillis}_${totalDurationMillis}_${splits.size}"
+        synthCache[cacheKey]?.let { return it }
+
         val coords = decode(encodedPolyline)
         if (coords.isEmpty()) return emptyList()
+        val n = coords.size
         val cumDist = cumDists(coords)
         val totD = cumDist.last().coerceAtLeast(1.0)
         val totT = totalDurationMillis.coerceAtLeast(1_000L)
-
-        return coords.mapIndexed { i, c ->
-            val d = cumDist[i]
-            val el = interpTime(d, totD, totT, splits)
-            val prev = if (i > 0) coords[i - 1] else c
-            val brg = if (i > 0) GeoMath.bearingDegrees(prev.latitude, prev.longitude, c.latitude, c.longitude) else 0f
-            val spd = splitSpeed(d, totD, totT, splits)
-            TrackPoint(i, startTimestampMillis + el, el, c.latitude, c.longitude, speedMps = spd, bearingDegrees = brg, cumulativeDistanceMeters = d)
+        val brgs = FloatArray(n)
+        for (i in 1 until n) {
+            brgs[i] = GeoMath.bearingDegrees(coords[i - 1].latitude, coords[i - 1].longitude, coords[i].latitude, coords[i].longitude)
         }
+
+        val spCnt = splits.size
+        val splitEnds = DoubleArray(spCnt)
+        val splitDurs = LongArray(spCnt)
+        val splitStartsT = LongArray(spCnt)
+        val midDists = DoubleArray(spCnt)
+        val splitSpeeds = DoubleArray(spCnt)
+        var dAcc = 0.0
+        var tAcc = 0L
+        for (k in 0 until spCnt) {
+            val sp = splits[k]
+            val sD = sp.distanceMeters.toDouble().coerceAtLeast(1.0)
+            splitStartsT[k] = tAcc
+            splitDurs[k] = sp.durationMillis
+            midDists[k] = dAcc + sD * 0.5
+            splitSpeeds[k] = sD / (sp.durationMillis / 1000.0).coerceAtLeast(1.0)
+            dAcc += sD
+            splitEnds[k] = dAcc
+            tAcc += sp.durationMillis
+        }
+
+        val fallbackSpd = (totD / (totT / 1000.0)).toFloat()
+        val out = ArrayList<TrackPoint>(n)
+        var tIdx = 0
+        var sIdx = 0
+
+        for (i in 0 until n) {
+            val c = coords[i]
+            val d = cumDist[i]
+
+            val el: Long = if (spCnt == 0) {
+                ((d / totD) * totT).toLong()
+            } else {
+                while (tIdx < spCnt - 1 && d > splitEnds[tIdx]) tIdx++
+                val sPrevD = if (tIdx == 0) 0.0 else splitEnds[tIdx - 1]
+                val sSpan = (splitEnds[tIdx] - sPrevD).coerceAtLeast(1.0)
+                val frac = ((d - sPrevD) / sSpan).coerceIn(0.0, 1.0)
+                (splitStartsT[tIdx] + (frac * splitDurs[tIdx]).toLong()).coerceAtMost(totT)
+            }
+
+            val baseSpd: Float = when {
+                spCnt == 0 -> fallbackSpd
+                spCnt == 1 -> splitSpeeds[0].toFloat()
+                d <= midDists[0] -> splitSpeeds[0].toFloat()
+                d >= midDists[spCnt - 1] -> splitSpeeds[spCnt - 1].toFloat()
+                else -> {
+                    while (sIdx < spCnt - 2 && d > midDists[sIdx + 1]) sIdx++
+                    val m0 = midDists[sIdx]
+                    val m1 = midDists[sIdx + 1]
+                    val t = ((d - m0) / (m1 - m0).coerceAtLeast(1.0)).coerceIn(0.0, 1.0)
+                    val mu = (1.0 - cos(t * PI)) * 0.5
+                    (splitSpeeds[sIdx] + (splitSpeeds[sIdx + 1] - splitSpeeds[sIdx]) * mu).toFloat()
+                }
+            }
+
+            val turnFactor = turnSlowdownFactor(brgs, i, n)
+            val spd = (baseSpd * turnFactor).coerceIn(0.6f, 12.0f)
+            out.add(
+                TrackPoint(
+                    seqIndex = i,
+                    timestampMillis = startTimestampMillis + el,
+                    elapsedMillis = el,
+                    latitude = c.latitude,
+                    longitude = c.longitude,
+                    speedMps = spd,
+                    bearingDegrees = brgs[i],
+                    cumulativeDistanceMeters = d
+                )
+            )
+        }
+
+        if (synthCache.size > 32) synthCache.clear()
+        synthCache[cacheKey] = out
+        return out
     }
 
     private fun cumDists(coords: List<LatLon>): DoubleArray {
@@ -80,35 +167,14 @@ object EncodedPolylineCodec {
         return arr
     }
 
-    private fun interpTime(d: Double, totD: Double, totT: Long, splits: List<RunSplit>): Long {
-        if (splits.isEmpty()) return ((d / totD) * totT).toLong()
-        var dAcc = 0.0
-        var tAcc = 0L
-        for (sp in splits) {
-            val sD = sp.distanceMeters.toDouble().coerceAtLeast(1.0)
-            if (d <= dAcc + sD) {
-                val frac = ((d - dAcc) / sD).coerceIn(0.0, 1.0)
-                return tAcc + (frac * sp.durationMillis).toLong()
-            }
-            dAcc += sD
-            tAcc += sp.durationMillis
+    private fun turnSlowdownFactor(brgs: FloatArray, i: Int, n: Int): Float {
+        if (i <= 0 || i >= n - 1) return 1.0f
+        val diff = abs(((brgs[i + 1] - brgs[i] + 540f) % 360f) - 180f)
+        return when {
+            diff > 75f -> 0.88f
+            diff > 40f -> 0.94f
+            else -> 1.0f
         }
-        return totT
-    }
-
-    private fun splitSpeed(d: Double, totD: Double, totT: Long, splits: List<RunSplit>): Float {
-        if (splits.isEmpty()) return (totD / (totT / 1000.0)).toFloat()
-        var dAcc = 0.0
-        for (sp in splits) {
-            val sD = sp.distanceMeters.toDouble().coerceAtLeast(1.0)
-            if (d <= dAcc + sD) {
-                val sec = (sp.durationMillis / 1000.0).coerceAtLeast(1.0)
-                return (sD / sec).toFloat()
-            }
-            dAcc += sD
-        }
-        val tail = splits.last()
-        return (tail.distanceMeters / (tail.durationMillis / 1000.0).coerceAtLeast(1.0)).toFloat()
     }
 
     private fun encodeDelta(vIn: Int, out: StringBuilder) {

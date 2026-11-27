@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.stridecoach.running.core.domain.model.ActivityKind
 import com.stridecoach.running.core.domain.model.ActivitySegmentType
 import com.stridecoach.running.core.domain.model.DetectedSegment
 import com.stridecoach.running.core.domain.model.RunRecord
@@ -27,7 +28,20 @@ data class RunEntity(
     val source: String,
     val totalSteps: Int = 0,
     val avgCadenceSpm: Int = 0,
-    val elevationGainMeters: Int = 0
+    val elevationGainMeters: Int = 0,
+    val activityKind: String = ActivityKind.RUNNING.name,
+    val rawEncodedPolyline: String = "",
+    val snappedEncodedPolyline: String = "",
+    val isSnapped: Boolean = false,
+    val snapStreetPct: Int = 0,
+    val snapGreeneryPct: Int = 0,
+    val snapLoopsKept: Int = 0,
+    val strideStabilityPct: Int = 0,
+    val elevationLossMeters: Int = 0,
+    val minAltitudeMeters: Int? = null,
+    val maxAltitudeMeters: Int? = null,
+    val gradeAdjustedPaceSec: Int = 0,
+    val deletedAtMillis: Long? = null
 ) {
     fun toDomain(
         sp: List<RunSplit>,
@@ -37,7 +51,11 @@ data class RunEntity(
         id, startTimestampMillis, distanceMeters, durationMillis, paceSecondsPerKm,
         caloriesBurned, name, description, encodedPolyline, sp, pts,
         workoutId, planDayId, RunSource.valueOf(source),
-        totalSteps, avgCadenceSpm, elevationGainMeters, segs
+        totalSteps, avgCadenceSpm, elevationGainMeters, segs,
+        runCatching { ActivityKind.valueOf(activityKind) }.getOrDefault(ActivityKind.RUNNING),
+        rawEncodedPolyline, snappedEncodedPolyline, isSnapped,
+        snapStreetPct, snapGreeneryPct, snapLoopsKept, strideStabilityPct,
+        elevationLossMeters, minAltitudeMeters, maxAltitudeMeters, gradeAdjustedPaceSec, deletedAtMillis
     )
 }
 
@@ -185,5 +203,6 @@ data class PlannedDayEntity(
 data class WorkoutTemplateEntity(
     @PrimaryKey val id: String,
     val title: String,
-    val workoutJson: String
+    val workoutJson: String,
+    val deletedAtMillis: Long? = null
 )

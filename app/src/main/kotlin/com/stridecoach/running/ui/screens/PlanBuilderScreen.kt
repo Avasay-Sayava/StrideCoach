@@ -1,9 +1,11 @@
 package com.stridecoach.running.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,15 +13,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.domain.engine.PlanPresets
 import com.stridecoach.running.core.domain.model.DayRole
@@ -42,6 +51,8 @@ import com.stridecoach.running.core.domain.model.StructuredWorkout
 import com.stridecoach.running.core.domain.model.TrainingPlanConfig
 import com.stridecoach.running.core.domain.model.WalkingLoadRule
 import com.stridecoach.running.core.domain.model.WorkoutSegment
+import com.stridecoach.running.core.domain.model.formatDuration
+import com.stridecoach.running.core.domain.model.formatPace
 import com.stridecoach.running.ui.CoachUiState
 import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.StrideCard
@@ -49,6 +60,8 @@ import com.stridecoach.running.ui.theme.KdeMuted
 import com.stridecoach.running.ui.theme.KdePurple
 import com.stridecoach.running.ui.theme.KdeSky
 import com.stridecoach.running.ui.theme.PaceTooFast
+import com.stridecoach.running.ui.theme.PaceTooSlow
+import com.stridecoach.running.ui.theme.TabularNumberStyle
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.util.UUID
@@ -59,20 +72,23 @@ fun PlanBuilderScreen(
     onActivatePlan: (TrainingPlanConfig) -> Unit,
     onRecalibrate5k: (Long) -> Unit,
     onSaveTemplate: (StructuredWorkout) -> Unit,
+    onTrashTemplate: (String) -> Unit,
     onStartWorkout: (StructuredWorkout) -> Unit,
     onOpenRoutePlanner: () -> Unit = {}
 ) {
     var subTab by remember { mutableIntStateOf(0) }
     val scroll = rememberScrollState()
-    val labels = listOf("Schedule", "Plan Builder", "Workouts")
+    val labels = listOf("Schedule", "Builder", "Workouts")
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Training Plans", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            OutlinedButton(onClick = onOpenRoutePlanner, shape = RoundedCornerShape(999.dp)) { Text("Draw Route") }
+            Text("Training Plans", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).padding(end = 8.dp))
+            OutlinedButton(onClick = onOpenRoutePlanner, shape = RoundedCornerShape(999.dp)) {
+                Text("Draw Route", maxLines = 1, softWrap = false)
+            }
         }
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             labels.forEachIndexed { idx, lbl ->
@@ -84,32 +100,113 @@ fun PlanBuilderScreen(
                         activeContainerColor = KdePurple.copy(alpha = 0.22f),
                         activeContentColor = KdePurple
                     )
-                ) { Text(lbl) }
+                ) { Text(lbl, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             }
         }
         when (subTab) {
-            0 -> ScheduleList(state.activePlan?.name, state.plannedDays, onStartWorkout)
+            0 -> ScheduleList(
+                plan = state.activePlan,
+                days = state.plannedDays,
+                showFinale = state.preferences.showCompetitionFinale,
+                onRun = onStartWorkout
+            )
             1 -> {
                 PlanCreatorCard(onActivatePlan)
                 BenchmarkCard(onRecalibrate5k)
             }
-            2 -> WorkoutBuilderCard(state.activePlan?.targetPaceSecPerKm ?: 295, state.templates, onSaveTemplate, onStartWorkout)
+            2 -> WorkoutBuilderCard(
+                paceSec = state.activePlan?.targetPaceSecPerKm ?: 295,
+                templates = state.templates,
+                onSave = onSaveTemplate,
+                onTrash = onTrashTemplate,
+                onRun = onStartWorkout
+            )
         }
     }
 }
 
 @Composable
-private fun ScheduleList(planName: String?, days: List<PlannedDay>, onRun: (StructuredWorkout) -> Unit) {
+private fun ScheduleList(
+    plan: TrainingPlanConfig?,
+    days: List<PlannedDay>,
+    showFinale: Boolean,
+    onRun: (StructuredWorkout) -> Unit
+) {
     if (days.isEmpty()) {
-        StrideCard { Text("No plan active. Open Plan Builder to generate one.", color = KdeMuted) }
+        StrideCard { Text("No plan active. Open Builder to generate one.", color = KdeMuted) }
         return
     }
     StrideCard {
-        Text(planName ?: "Active Schedule", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text("${days.size} scheduled days • Showing upcoming weeks", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
+        Text(plan?.name ?: "Active Schedule", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("${days.size} scheduled days • Culminating on Race Day", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
     }
-    val byWeek = days.groupBy { it.weekNumber }.entries.take(6)
-    byWeek.forEach { (wk, list) -> WeekCard(wk, list, onRun) }
+    val nonRaceWeeks = days.filter { it.dayRole != DayRole.RACE_DAY }.groupBy { it.weekNumber }
+    val raceDay = days.firstOrNull { it.dayRole == DayRole.RACE_DAY }
+    var showAllWeeks by remember { mutableStateOf(false) }
+    val visibleWeeks = if (showAllWeeks) nonRaceWeeks.entries.toList() else nonRaceWeeks.entries.take(3)
+
+    visibleWeeks.forEach { (wk, list) -> WeekCard(wk, list, onRun) }
+    if (nonRaceWeeks.size > 3) {
+        OutlinedButton(
+            onClick = { showAllWeeks = !showAllWeeks },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Text(
+                if (showAllWeeks) "Collapse Weeks" else "Show All ${nonRaceWeeks.size} Weeks",
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+    if (showFinale && raceDay != null) {
+        CompetitionFinaleCard(plan, raceDay, onRun)
+    }
+}
+
+@Composable
+private fun CompetitionFinaleCard(plan: TrainingPlanConfig?, raceDay: PlannedDay, onRun: (StructuredWorkout) -> Unit) {
+    val w = raceDay.workout
+    val dt = LocalDate.ofEpochDay(raceDay.dateEpochDay)
+    val estFinishMs = plan?.let {
+        val m = it.goalDistance.meters.takeIf { d -> d > 0 } ?: 10_000
+        ((m / 1000.0) * it.targetPaceSecPerKm * 1000.0).toLong()
+    }
+    StrideCard(
+        borderColor = KdePurple.copy(alpha = 0.7f),
+        bgColor = KdePurple.copy(alpha = 0.12f)
+    ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.EmojiEvents, contentDescription = null, tint = KdePurple)
+                Text("FINAL COMPETITION", style = MaterialTheme.typography.labelLarge, color = KdePurple, fontWeight = FontWeight.Bold)
+            }
+            StatusPill("Week ${raceDay.weekNumber} • $dt", KdeSky)
+        }
+        Text(w?.title ?: "${plan?.goalDistance?.label ?: "10K"} Race Day", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        val goalStr = if (plan != null && estFinishMs != null) {
+            "Goal pace ${formatPace(plan.targetPaceSecPerKm)}/km • Est. finish ${formatDuration(estFinishMs)}"
+        } else {
+            "Championship pacing finale with live finish projection."
+        }
+        Text(goalStr, style = MaterialTheme.typography.bodySmall.merge(TabularNumberStyle), color = KdeMuted)
+        plan?.racePhases?.forEach { ph ->
+            Surface(shape = RoundedCornerShape(8.dp), color = KdeSky.copy(alpha = 0.10f), border = BorderStroke(1.dp, KdeSky.copy(alpha = 0.25f))) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(ph.name, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Text(ph.paceBounds.formatRange(), style = MaterialTheme.typography.labelSmall.merge(TabularNumberStyle), color = KdeSky)
+                }
+            }
+        }
+        if (w != null) {
+            Button(onClick = { onRun(w) }, shape = RoundedCornerShape(999.dp), modifier = Modifier.fillMaxWidth()) {
+                Text("Start Competition Race Pacer", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+            }
+        }
+    }
 }
 
 @Composable
@@ -121,7 +218,7 @@ private fun WeekCard(wk: Int, days: List<PlannedDay>, onRun: (StructuredWorkout)
         else -> "Build"
     }
     StrideCard {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Week $wk", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             StatusPill(tag, if (tag == "Build") KdePurple else KdeSky)
         }
@@ -143,13 +240,15 @@ private fun DayRow(d: PlannedDay, onRun: (StructuredWorkout) -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(modifier = Modifier.weight(1f)) {
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text("${dt.dayOfWeek.name.take(3)} $dt", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
-            Text(d.workout?.title ?: d.dayRole.label, style = MaterialTheme.typography.bodyMedium)
+            Text(d.workout?.title ?: d.dayRole.label, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         val w = d.workout
         if (w != null && d.dayRole != DayRole.WALK_ONLY) {
-            OutlinedButton(onClick = { onRun(w) }, shape = RoundedCornerShape(999.dp)) { Text("Run") }
+            OutlinedButton(onClick = { onRun(w) }, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)) {
+                Text("Run", maxLines = 1, softWrap = false)
+            }
         } else {
             StatusPill(d.dayRole.label, c)
         }
@@ -191,7 +290,7 @@ private fun GoalChipsRow(sel: GoalDistance, onPick: (GoalDistance) -> Unit) {
     )
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         GoalDistance.entries.forEach { d ->
-            FilterChip(selected = sel == d, onClick = { onPick(d) }, colors = cc, label = { Text(d.label) })
+            FilterChip(selected = sel == d, onClick = { onPick(d) }, colors = cc, label = { Text(d.label, maxLines = 1, softWrap = false) })
         }
     }
 }
@@ -211,7 +310,7 @@ private fun WeekdayRoleChips(roles: Map<DayOfWeek, DayRole>, onChange: (Map<DayO
                 selected = r != DayRole.FULL_REST,
                 onClick = { onChange(roles + (dow to cycle[(cycle.indexOf(r) + 1) % cycle.size])) },
                 colors = cc,
-                label = { Text("${dow.name.take(3)}: ${r.label}") }
+                label = { Text("${dow.name.take(3)}: ${r.label}", maxLines = 1, softWrap = false) }
             )
         }
     }
@@ -220,8 +319,8 @@ private fun WeekdayRoleChips(roles: Map<DayOfWeek, DayRole>, onChange: (Map<DayO
 @Composable
 private fun PlanActionButtons(onCreate: () -> Unit, onPreset: () -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = onCreate, shape = RoundedCornerShape(999.dp)) { Text("Generate Plan") }
-        OutlinedButton(onClick = onPreset, shape = RoundedCornerShape(999.dp)) { Text("10K Preset") }
+        Button(onClick = onCreate, shape = RoundedCornerShape(999.dp)) { Text("Generate Plan", maxLines = 1, softWrap = false) }
+        OutlinedButton(onClick = onPreset, shape = RoundedCornerShape(999.dp)) { Text("10K Preset", maxLines = 1, softWrap = false) }
     }
 }
 
@@ -235,7 +334,7 @@ private fun BenchmarkCard(onRecalibrate: (Long) -> Unit) {
             Button(shape = RoundedCornerShape(999.dp), onClick = {
                 val v = mins.toDoubleOrNull() ?: return@Button
                 if (v > 12.0) onRecalibrate((v * 60_000.0).toLong())
-            }) { Text("Recalibrate") }
+            }) { Text("Recalibrate", maxLines = 1, softWrap = false) }
         }
     }
 }
@@ -245,6 +344,7 @@ private fun WorkoutBuilderCard(
     paceSec: Int,
     templates: List<StructuredWorkout>,
     onSave: (StructuredWorkout) -> Unit,
+    onTrash: (String) -> Unit,
     onRun: (StructuredWorkout) -> Unit
 ) {
     var title by remember { mutableStateOf("4x1K Intervals") }
@@ -258,16 +358,23 @@ private fun WorkoutBuilderCard(
         ThreeFieldRow("Reps", reps, { reps = it }, "Work (m)", workM, { workM = it }, "Rest (s)", restS) { restS = it }
         Button(shape = RoundedCornerShape(999.dp), onClick = {
             onSave(buildIntervalTemplate(title, reps, workM, restS, paceSec))
-        }) { Text("Save Workout Template") }
-        templates.forEach { tpl -> TemplateRow(tpl, onRun) }
+        }) { Text("Save Workout Template", maxLines = 1, softWrap = false) }
+        templates.forEach { tpl -> TemplateRow(tpl, onTrash, onRun) }
     }
 }
 
 @Composable
-private fun TemplateRow(tpl: StructuredWorkout, onRun: (StructuredWorkout) -> Unit) {
+private fun TemplateRow(tpl: StructuredWorkout, onTrash: (String) -> Unit, onRun: (StructuredWorkout) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(tpl.title, style = MaterialTheme.typography.bodyMedium)
-        OutlinedButton(onClick = { onRun(tpl) }, shape = RoundedCornerShape(999.dp)) { Text("Run") }
+        Text(tpl.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).padding(end = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedButton(onClick = { onRun(tpl) }, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
+                Text("Run", maxLines = 1, softWrap = false)
+            }
+            IconButton(onClick = { onTrash(tpl.id) }) {
+                Icon(Icons.Default.DeleteOutline, contentDescription = "Move template to Trash", tint = PaceTooSlow)
+            }
+        }
     }
 }
 

@@ -3,6 +3,21 @@ package com.stridecoach.running.core.domain.engine
 import com.stridecoach.running.core.domain.model.TrackPoint
 import kotlin.math.roundToInt
 
+enum class UnsnappedReason {
+    GREENERY_OFFROAD,
+    STOP_LOOP
+}
+
+data class UnsnappedSection(
+    val id: Int,
+    val startIdx: Int,
+    val endIdx: Int,
+    val distMeters: Int,
+    val avgDriftMeters: Int,
+    val reason: UnsnappedReason,
+    val canSnapToStreet: Boolean
+)
+
 data class MatchedPointSample(
     val matched: Boolean,
     val lat: Double,
@@ -14,7 +29,11 @@ data class SnapMergeResult(
     val points: List<TrackPoint>,
     val snappedPct: Int,
     val greeneryPct: Int,
-    val circlesKept: Int
+    val circlesKept: Int,
+    val rawPoints: List<TrackPoint> = emptyList(),
+    val samples: List<MatchedPointSample> = emptyList(),
+    val unsnappedSections: List<UnsnappedSection> = emptyList(),
+    val forcedSnapSectionIds: Set<Int> = emptySet()
 )
 
 object ParkSafeSnapMerger {
@@ -51,16 +70,27 @@ object ParkSafeSnapMerger {
     fun mergePointMatches(
         raw: List<TrackPoint>,
         samples: List<MatchedPointSample>,
-        maxSnapM: Double = 18.0
+        maxSnapM: Double = 18.0,
+        forcedSnapSectionIds: Set<Int> = emptySet()
     ): SnapMergeResult {
-        if (raw.size < 2 || samples.size != raw.size) return SnapMergeResult(raw, 0, 100, 0)
+        if (raw.size < 2 || samples.size != raw.size) {
+            return SnapMergeResult(raw, 0, 100, 0, raw, samples)
+        }
         val (loops, loopCount) = detectHoldingLoops(raw)
-        var snapCount = 0
+        val sections = buildUnsnappedSections(raw, samples, loops, maxSnapM)
+        val forcedIndices = HashSet<Int>()
+        for (sec in sections) {
+            if (sec.id in forcedSnapSectionIds) {
+                for (k in sec.startIdx..sec.endIdx) forcedIndices.add(k)
+            }
+        }
 
+        var snapCount = 0
         val out = raw.mapIndexed { i, p ->
             val sp = samples[i]
-            val useSnap = !loops[i] && sp.matched && sp.distM <= maxSnapM
-            if (useSnap) {
+            val naturalSnap = !loops[i] && sp.matched && sp.distM <= maxSnapM
+            val forcedSnap = (i in forcedIndices) && sp.matched
+            if (naturalSnap || forcedSnap) {
                 snapCount++
                 p.copy(latitude = sp.lat, longitude = sp.lon)
             } else {
@@ -69,7 +99,94 @@ object ParkSafeSnapMerger {
         }
         val rebuilt = rebuildDistAndBearing(out)
         val pct = ((snapCount * 100.0) / raw.size).roundToInt().coerceIn(0, 100)
-        return SnapMergeResult(rebuilt, pct, (100 - pct).coerceIn(0, 100), loopCount)
+        return SnapMergeResult(
+            points = rebuilt,
+            snappedPct = pct,
+            greeneryPct = (100 - pct).coerceIn(0, 100),
+            circlesKept = loopCount,
+            rawPoints = raw,
+            samples = samples,
+            unsnappedSections = sections,
+            forcedSnapSectionIds = forcedSnapSectionIds
+        )
+    }
+
+    fun recomputeWithOverrides(
+        prev: SnapMergeResult,
+        forcedIds: Set<Int>,
+        maxSnapM: Double = 18.0
+    ): SnapMergeResult {
+        if (prev.rawPoints.size < 2 || prev.samples.size != prev.rawPoints.size) return prev
+        return mergePointMatches(prev.rawPoints, prev.samples, maxSnapM, forcedIds)
+    }
+
+    private fun buildUnsnappedSections(
+        raw: List<TrackPoint>,
+        samples: List<MatchedPointSample>,
+        loops: BooleanArray,
+        maxSnapM: Double
+    ): List<UnsnappedSection> {
+        val keepRaw = BooleanArray(raw.size) { i ->
+            val sp = samples[i]
+            loops[i] || !sp.matched || sp.distM > maxSnapM
+        }
+        val spans = collectSpans(keepRaw)
+        val out = mutableListOf<UnsnappedSection>()
+        var nextId = 1
+        for ((s, e) in spans) {
+            val isLoop = (s..e).any { loops[it] }
+            val dist = spanDistMeters(raw, s, e)
+            if (!isLoop && (e - s < 2 || dist < 18)) continue
+            val matchedCnt = (s..e).count { samples[it].matched }
+            val driftSum = (s..e).sumOf { if (samples[it].matched) samples[it].distM.coerceAtMost(99.0) else 35.0 }
+            val avgDrift = (driftSum / (e - s + 1)).roundToInt()
+            val reason = if (isLoop) UnsnappedReason.STOP_LOOP else UnsnappedReason.GREENERY_OFFROAD
+            out.add(
+                UnsnappedSection(
+                    id = nextId++,
+                    startIdx = s,
+                    endIdx = e,
+                    distMeters = dist,
+                    avgDriftMeters = avgDrift,
+                    reason = reason,
+                    canSnapToStreet = matchedCnt * 2 >= (e - s + 1)
+                )
+            )
+        }
+        return out
+    }
+
+    private fun collectSpans(marks: BooleanArray): List<Pair<Int, Int>> {
+        val spans = mutableListOf<Pair<Int, Int>>()
+        var i = 0
+        while (i < marks.size) {
+            if (!marks[i]) {
+                i++
+                continue
+            }
+            val start = i
+            while (i < marks.size) {
+                if (marks[i]) {
+                    i++
+                } else if (i + 1 < marks.size && marks[i + 1]) {
+                    i += 2
+                } else if (i + 2 < marks.size && marks[i + 2]) {
+                    i += 3
+                } else {
+                    break
+                }
+            }
+            spans.add(start to (i - 1))
+        }
+        return spans
+    }
+
+    private fun spanDistMeters(pts: List<TrackPoint>, s: Int, e: Int): Int {
+        var acc = 0.0
+        for (i in (s + 1)..e) {
+            acc += GeoMath.distanceMeters(pts[i - 1].latitude, pts[i - 1].longitude, pts[i].latitude, pts[i].longitude)
+        }
+        return acc.roundToInt()
     }
 
     private fun countClusters(marks: BooleanArray): Int {

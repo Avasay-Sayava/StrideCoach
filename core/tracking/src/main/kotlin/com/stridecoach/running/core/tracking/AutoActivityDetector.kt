@@ -12,10 +12,14 @@ import com.google.android.gms.location.ActivityRecognition as ArApi
 import com.google.android.gms.location.ActivityTransition.ACTIVITY_TRANSITION_ENTER as ENTER
 import com.google.android.gms.location.ActivityTransition.Builder as TrBuild
 import com.google.android.gms.location.ActivityTransitionRequest as TrReq
-import com.google.android.gms.location.DetectedActivity.RUNNING as RUN
+import com.google.android.gms.location.DetectedActivity.ON_BICYCLE
+import com.google.android.gms.location.DetectedActivity.RUNNING
+import com.google.android.gms.location.DetectedActivity.WALKING
 
 object AutoActivityDetector {
     private const val REQ = 8801
+    internal const val PREFS = "stridecoach_auto_detect"
+    internal const val KEY_AUTO_START = "auto_start_run"
 
     @SuppressLint("MissingPermission")
     fun setEnabled(c: Context, on: Boolean) {
@@ -27,10 +31,22 @@ object AutoActivityDetector {
                 api.removeActivityTransitionUpdates(pi)
                 return@runCatching
             }
-            val t = TrBuild().setActivityType(RUN).setActivityTransition(ENTER).build()
-            api.requestActivityTransitionUpdates(TrReq(listOf(t)), pi)
+            val list = listOf(RUNNING, WALKING, ON_BICYCLE).map { kind ->
+                TrBuild().setActivityType(kind).setActivityTransition(ENTER).build()
+            }
+            api.requestActivityTransitionUpdates(TrReq(list), pi)
         }
     }
+
+    fun setAutoStartEnabled(c: Context, on: Boolean) {
+        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_AUTO_START, on)
+            .apply()
+    }
+
+    internal fun isAutoStartEnabled(c: Context): Boolean =
+        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_AUTO_START, false)
 
     private fun hasPerm(c: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || checkSelfPermission(c, ACT) == PERMISSION_GRANTED

@@ -19,7 +19,8 @@ data class SplitEvaluation(
     val split: RunSplit,
     val paceSecPerKm: Int,
     val deltaFromTargetSec: Int,
-    val flag: SplitDisciplineFlag
+    val flag: SplitDisciplineFlag,
+    val zone: PaceZone = PaceZone.Z3_CRUISE
 )
 
 data class WeeklyLoadPoint(
@@ -50,24 +51,60 @@ data class PersonalRecord(
     val runId: String
 )
 
+data class PrProgressionEntry(
+    val runId: String,
+    val runName: String,
+    val timestampMillis: Long,
+    val durationMillis: Long,
+    val paceSecPerKm: Int,
+    val improvementMillis: Long
+)
+
+data class PersonalRecordHistory(
+    val label: String,
+    val targetMeters: Int,
+    val currentBest: PrProgressionEntry,
+    val history: List<PrProgressionEntry>
+)
+
+data class HistoricalLoadBucket(
+    val label: String,
+    val runMeters: Int,
+    val walkMeters: Int,
+    val otherMeters: Int
+)
+
+data class HistoricalWindowStats(
+    val startEpochDay: Long,
+    val endEpochDay: Long,
+    val totalRunMeters: Int,
+    val totalWalkMeters: Int,
+    val totalDurationMillis: Long,
+    val totalElevGainM: Int,
+    val sessionCount: Int,
+    val bars: List<HistoricalLoadBucket>,
+    val matchingRuns: List<RunRecord>
+)
+
 class RunAnalyticsEngine(
     private val zoneId: ZoneId = ZoneId.systemDefault()
 ) {
     fun evaluateSplitDiscipline(
         splits: List<RunSplit>,
-        targetPaceSecPerKm: Int,
+        refPaceSecPerKm: Int,
         toleranceSec: Int = 8
     ): List<SplitEvaluation> {
-        if (splits.isEmpty() || targetPaceSecPerKm <= 0) return emptyList()
+        if (splits.isEmpty() || refPaceSecPerKm <= 0) return emptyList()
         return splits.map { split ->
             val pace = split.paceSecPerKm()
-            val delta = pace - targetPaceSecPerKm
+            val delta = pace - refPaceSecPerKm
             val flag = when {
                 delta < -toleranceSec -> SplitDisciplineFlag.EARLY_SURGE
                 delta > toleranceSec -> SplitDisciplineFlag.LATE_FADE
                 else -> SplitDisciplineFlag.ON_TARGET
             }
-            SplitEvaluation(split, pace, delta, flag)
+            val zone = PaceZoneClassifier.classifyPace(pace, refPaceSecPerKm)
+            SplitEvaluation(split, pace, delta, flag, zone)
         }
     }
 
@@ -109,18 +146,75 @@ class RunAnalyticsEngine(
         }
     }
 
+    fun computeHistoricalWindow(
+        runs: List<RunRecord>,
+        walks: List<WalkLog>,
+        endEpochDay: Long,
+        spanDays: Int,
+        bucketDays: Int
+    ): HistoricalWindowStats {
+        val span = spanDays.coerceAtLeast(1)
+        val bucket = bucketDays.coerceAtLeast(1)
+        val startEpochDay = endEpochDay - span + 1L
+
+        val inWindowRuns = runs.filter { r ->
+            val d = Instant.ofEpochMilli(r.startTimestampMillis).atZone(zoneId).toLocalDate().toEpochDay()
+            d in startEpochDay..endEpochDay
+        }.sortedByDescending { it.startTimestampMillis }
+        val inWindowWalks = walks.filter { it.dateEpochDay in startEpochDay..endEpochDay }
+
+        val runByDay = mutableMapOf<Long, Int>()
+        for (r in inWindowRuns) {
+            val d = Instant.ofEpochMilli(r.startTimestampMillis).atZone(zoneId).toLocalDate().toEpochDay()
+            runByDay[d] = (runByDay[d] ?: 0) + r.distanceMeters
+        }
+        val walkByDay = inWindowWalks.associate { it.dateEpochDay to it.distanceMeters }
+
+        val bars = mutableListOf<HistoricalLoadBucket>()
+        var cur = startEpochDay
+        while (cur <= endEpochDay) {
+            val bEnd = (cur + bucket - 1L).coerceAtMost(endEpochDay)
+            var rm = 0
+            var wm = 0
+            for (d in cur..bEnd) {
+                rm += runByDay[d] ?: 0
+                wm += walkByDay[d] ?: 0
+            }
+            val dt = LocalDate.ofEpochDay(cur)
+            val lbl = when {
+                bucket == 1 -> dt.dayOfWeek.name.take(2).lowercase().replaceFirstChar { it.uppercase() }
+                bucket >= 25 -> dt.month.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
+                else -> "${dt.monthValue}/${dt.dayOfMonth}"
+            }
+            bars.add(HistoricalLoadBucket(lbl, rm, wm, 0))
+            cur += bucket
+        }
+
+        return HistoricalWindowStats(
+            startEpochDay = startEpochDay,
+            endEpochDay = endEpochDay,
+            totalRunMeters = inWindowRuns.sumOf { it.distanceMeters },
+            totalWalkMeters = inWindowWalks.sumOf { it.distanceMeters },
+            totalDurationMillis = inWindowRuns.sumOf { it.durationMillis },
+            totalElevGainM = inWindowRuns.sumOf { it.elevGainM },
+            sessionCount = inWindowRuns.size,
+            bars = bars,
+            matchingRuns = inWindowRuns
+        )
+    }
+
     fun computePaceZoneDistribution(
         runs: List<RunRecord>,
         refPaceSec: Int
     ): List<PaceZoneBucket> {
-        val ref = refPaceSec.coerceIn(180, 540)
-        val sums = LongArray(5)
+        val ref = refPaceSec.coerceIn(150, 720)
+        val sums = LongArray(PaceZone.entries.size)
         for (run in runs) addRunToZones(run, ref, sums)
         val total = sums.sum().coerceAtLeast(1L)
-        val labels = listOf("Easy", "Aerobic", "Tempo", "Threshold", "Peak")
-        return (0..4).map { idx ->
+        return PaceZone.entries.map { z ->
+            val idx = z.zoneNum - 1
             val pct = ((sums[idx] * 100.0) / total).toInt()
-            PaceZoneBucket(idx + 1, labels[idx], pct, sums[idx])
+            PaceZoneBucket(z.zoneNum, z.label, pct, sums[idx])
         }
     }
 
@@ -136,7 +230,12 @@ class RunAnalyticsEngine(
         }
     }
 
-    fun computePersonalRecords(runs: List<RunRecord>): List<PersonalRecord> {
+    fun computePersonalRecords(runs: List<RunRecord>): List<PersonalRecord> =
+        computePersonalRecordHistories(runs).map { h ->
+            PersonalRecord(h.label, h.targetMeters, h.currentBest.durationMillis, h.currentBest.runId)
+        }
+
+    fun computePersonalRecordHistories(runs: List<RunRecord>): List<PersonalRecordHistory> {
         val marks = listOf(
             "1K" to 1_000,
             "2K" to 2_000,
@@ -144,12 +243,31 @@ class RunAnalyticsEngine(
             "10K" to 10_000,
             "Half Marathon" to 21_097
         )
+        val chronological = runs.sortedBy { it.startTimestampMillis }
         return marks.mapNotNull { (label, meters) ->
-            val eligible = runs.filter { it.distanceMeters >= (meters * 0.98) && it.durationMillis > 0L }
-            val best = eligible.minByOrNull { (it.durationMillis.toDouble() / it.distanceMeters) * meters }
-                ?: return@mapNotNull null
-            val ms = ((best.durationMillis.toDouble() / best.distanceMeters) * meters).toLong()
-            PersonalRecord(label, meters, ms, best.id)
+            var bestMs = Long.MAX_VALUE
+            val breaks = mutableListOf<PrProgressionEntry>()
+            for (r in chronological) {
+                if (r.distanceMeters < (meters * 0.98) || r.durationMillis <= 0L) continue
+                val projMs = ((r.durationMillis.toDouble() / r.distanceMeters) * meters).toLong()
+                if (projMs < bestMs) {
+                    val gain = if (bestMs == Long.MAX_VALUE) 0L else bestMs - projMs
+                    bestMs = projMs
+                    val pace = ((projMs / 1000.0) / (meters / 1000.0)).toInt()
+                    breaks.add(
+                        PrProgressionEntry(
+                            runId = r.id,
+                            runName = r.name,
+                            timestampMillis = r.startTimestampMillis,
+                            durationMillis = projMs,
+                            paceSecPerKm = pace,
+                            improvementMillis = gain
+                        )
+                    )
+                }
+            }
+            val current = breaks.lastOrNull() ?: return@mapNotNull null
+            PersonalRecordHistory(label, meters, current, breaks.reversed())
         }
     }
 
@@ -157,21 +275,17 @@ class RunAnalyticsEngine(
         if (run.splits.isNotEmpty()) {
             for (sp in run.splits) {
                 val p = sp.paceSecPerKm()
-                if (p > 0) sums[zoneIdx(p - ref)] += sp.durationMillis.coerceAtLeast(0L)
+                if (p > 0) {
+                    val idx = PaceZoneClassifier.classifyPace(p, ref).zoneNum - 1
+                    sums[idx] += sp.durationMillis.coerceAtLeast(0L)
+                }
             }
             return
         }
         if (run.paceSecondsPerKm > 0) {
-            sums[zoneIdx(run.paceSecondsPerKm - ref)] += run.durationMillis.coerceAtLeast(0L)
+            val idx = PaceZoneClassifier.classifyPace(run.paceSecondsPerKm, ref).zoneNum - 1
+            sums[idx] += run.durationMillis.coerceAtLeast(0L)
         }
-    }
-
-    private fun zoneIdx(delta: Int): Int = when {
-        delta > 45 -> 0
-        delta in 16..45 -> 1
-        delta in -5..15 -> 2
-        delta in -20..-6 -> 3
-        else -> 4
     }
 
     private fun weekKey(date: LocalDate): String {

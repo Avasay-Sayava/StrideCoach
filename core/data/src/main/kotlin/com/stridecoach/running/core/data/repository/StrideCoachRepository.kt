@@ -18,17 +18,30 @@ import com.stridecoach.running.core.domain.model.StructuredWorkout
 import com.stridecoach.running.core.domain.model.TrainingPlanConfig
 import com.stridecoach.running.core.domain.model.WalkLog
 import com.stridecoach.running.core.domain.model.WalkSource
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
 class StrideCoachRepository(
     private val db: RunningDatabase,
     private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 ) {
+    private val plannedDayCache = ConcurrentHashMap<String, PlannedDay>()
+    private val templateCache = ConcurrentHashMap<String, StructuredWorkout>()
+
     fun observeRuns(): Flow<List<RunRecord>> = db.runDao().observeRunsWithSplits().map { list ->
+        list.map { row ->
+            val sp = row.splits.sortedBy { it.splitNumber }.map { it.toDomain() }
+            row.run.toDomain(sp, emptyList())
+        }
+    }.flowOn(Dispatchers.Default)
+
+    fun observeTrashedRuns(): Flow<List<RunRecord>> = db.runDao().observeTrashedRunsWithSplits().map { list ->
         list.map { row ->
             val sp = row.splits.sortedBy { it.splitNumber }.map { it.toDomain() }
             row.run.toDomain(sp, emptyList())
@@ -48,6 +61,12 @@ class StrideCoachRepository(
         row.run.toDomain(sp, emptyList())
     }
 
+    suspend fun getAllRunsForVault(): List<RunRecord> = db.runDao().getAllRunsIncludingTrashed().map { row ->
+        val sp = row.splits.sortedBy { it.splitNumber }.map { it.toDomain() }
+        val pts = db.runDao().getTrackPoints(row.run.id).map { it.toDomain() }
+        row.run.toDomain(sp, pts)
+    }
+
     suspend fun saveRun(run: RunRecord) {
         db.runDao().replaceRunFull(run.toBundle())
     }
@@ -59,7 +78,7 @@ class StrideCoachRepository(
 
     suspend fun saveRunsDeduplicated(incoming: List<RunRecord>): Int {
         if (incoming.isEmpty()) return 0
-        val existing = db.runDao().getAllRunsWithSplits().map { it.run.startTimestampMillis }
+        val existing = db.runDao().getAllRunsIncludingTrashed().map { it.run.startTimestampMillis }
         val windowMs = 5 * 60_000L
         val fresh = incoming.filter { rec ->
             existing.none { ts -> abs(ts - rec.startTimestampMillis) <= windowMs }
@@ -68,10 +87,16 @@ class StrideCoachRepository(
         return fresh.size
     }
 
-    suspend fun deleteRun(id: String) = db.runDao().deleteRun(id)
+    suspend fun moveRunToTrash(id: String) = db.runDao().setRunDeleted(id, System.currentTimeMillis())
+    suspend fun restoreRun(id: String) = db.runDao().setRunDeleted(id, null)
+    suspend fun deleteRunForever(id: String) = db.runDao().deleteRun(id)
 
     fun observeWalkLogs(): Flow<List<WalkLog>> = db.walkDao().observeWalkLogs().map { list ->
         list.map { WalkLog(it.dateEpochDay, it.distanceMeters, WalkSource.valueOf(it.source), it.stepCount, it.updatedAtMillis) }
+    }.flowOn(Dispatchers.Default)
+
+    suspend fun getAllWalkLogs(): List<WalkLog> = db.walkDao().getAll().map {
+        WalkLog(it.dateEpochDay, it.distanceMeters, WalkSource.valueOf(it.source), it.stepCount, it.updatedAtMillis)
     }
 
     suspend fun saveWalkLogs(logs: List<WalkLog>) {
@@ -98,9 +123,19 @@ class StrideCoachRepository(
         row?.let { json.decodeFromString<TrainingPlanConfig>(it.configJson) }
     }
 
-    fun observePlanDays(planId: String): Flow<List<PlannedDay>> = db.planDao().observeDays(planId).map { list ->
-        list.map { it.toDomain(json) }
+    suspend fun getActivePlan(): TrainingPlanConfig? = db.planDao().getActivePlan()?.let {
+        json.decodeFromString<TrainingPlanConfig>(it.configJson)
     }
+
+    fun observePlanDays(planId: String): Flow<List<PlannedDay>> = db.planDao().observeDays(planId).map { list ->
+        list.map { row ->
+            val ck = "${row.id}_${row.status}_${row.linkedRunId}_${row.workoutJson.hashCode()}"
+            plannedDayCache[ck] ?: row.toDomain(json).also {
+                if (plannedDayCache.size > 400) plannedDayCache.clear()
+                plannedDayCache[ck] = it
+            }
+        }
+    }.flowOn(Dispatchers.Default)
 
     suspend fun activatePlan(cfg: TrainingPlanConfig, days: List<PlannedDay>) {
         val planRow = TrainingPlanEntity(cfg.id, cfg.name, json.encodeToString(cfg), true)
@@ -112,18 +147,52 @@ class StrideCoachRepository(
     }
 
     fun observeWorkoutTemplates(): Flow<List<StructuredWorkout>> = db.workoutTemplateDao().observeTemplates().map { list ->
-        list.map { json.decodeFromString<StructuredWorkout>(it.workoutJson) }
+        list.map { row ->
+            val ck = "${row.id}_${row.deletedAtMillis}_${row.workoutJson.hashCode()}"
+            templateCache[ck] ?: json.decodeFromString<StructuredWorkout>(row.workoutJson)
+                .copy(deletedAtMillis = row.deletedAtMillis)
+                .also {
+                    if (templateCache.size > 128) templateCache.clear()
+                    templateCache[ck] = it
+                }
+        }
+    }.flowOn(Dispatchers.Default)
+
+    fun observeTrashedTemplates(): Flow<List<StructuredWorkout>> = db.workoutTemplateDao().observeTrashedTemplates().map { list ->
+        list.map { row -> json.decodeFromString<StructuredWorkout>(row.workoutJson).copy(deletedAtMillis = row.deletedAtMillis) }
     }
 
+    suspend fun getAllTemplatesForVault(): List<StructuredWorkout> =
+        db.workoutTemplateDao().getAllIncludingTrashed().map { row ->
+            json.decodeFromString<StructuredWorkout>(row.workoutJson).copy(deletedAtMillis = row.deletedAtMillis)
+        }
+
     suspend fun saveWorkoutTemplate(w: StructuredWorkout) {
-        db.workoutTemplateDao().upsert(WorkoutTemplateEntity(w.id, w.title, json.encodeToString(w)))
+        db.workoutTemplateDao().upsert(WorkoutTemplateEntity(w.id, w.title, json.encodeToString(w), w.deletedAtMillis))
+    }
+
+    suspend fun moveTemplateToTrash(id: String) = db.workoutTemplateDao().setDeleted(id, System.currentTimeMillis())
+    suspend fun restoreTemplate(id: String) = db.workoutTemplateDao().setDeleted(id, null)
+    suspend fun deleteTemplateForever(id: String) = db.workoutTemplateDao().delete(id)
+
+    suspend fun restoreAllFromTrash() {
+        db.runDao().restoreAllTrashedRuns()
+        db.workoutTemplateDao().restoreAllTrashed()
+    }
+
+    suspend fun emptyTrash() {
+        db.runDao().emptyTrashedRuns()
+        db.workoutTemplateDao().emptyTrashed()
     }
 
     private fun RunRecord.toBundle(): FullRunBundle {
         val r = RunEntity(
             id, startTimestampMillis, distanceMeters, durationMillis, paceSecondsPerKm,
             caloriesBurned, name, description, encodedPolyline, workoutId, planDayId,
-            source.name, totalSteps, avgCadenceSpm, elevGainM
+            source.name, totalSteps, avgCadenceSpm, elevGainM,
+            activityKind.name, rawEncodedPolyline, snappedEncodedPolyline, isSnapped,
+            snapStreetPct, snapGreeneryPct, snapLoopsKept, strideStabilityPct,
+            elevLossM, minAltM, maxAltM, gradeAdjustedPaceSec, deletedAtMillis
         )
         val sp = splits.map {
             RunSplitEntity(0L, id, it.splitNumber, it.distanceMeters, it.durationMillis, it.targetPaceMinSec, it.targetPaceMaxSec, it.avgCadenceSpm, it.elevDeltaM)

@@ -31,11 +31,11 @@ jobs:
       - name: Run unit tests
         run: gradle :core:domain:test :core:data:testDebugUnitTest :core:tracking:testDebugUnitTest :app:testDebugUnitTest
 
-      - name: Build Debug APK
-        run: gradle :app:assembleDebug
+      - name: Build Release APK
+        run: gradle :app:assembleRelease
 
       - name: Prepare APK asset
-        run: cp app/build/outputs/apk/debug/app-debug.apk StrideCoach-latest.apk
+        run: cp app/build/outputs/apk/release/app-release.apk StrideCoach-latest.apk
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4

@@ -8,6 +8,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -15,6 +18,7 @@ import com.stridecoach.running.ui.AppShell
 import com.stridecoach.running.ui.StrideCoachViewModel
 import com.stridecoach.running.ui.theme.KdeNavBg
 import com.stridecoach.running.ui.theme.StrideCoachTheme
+import com.stridecoach.running.ui.theme.StrideThemeState
 
 class MainActivity : ComponentActivity() {
     private lateinit var vmRef: StrideCoachViewModel
@@ -31,7 +35,26 @@ class MainActivity : ComponentActivity() {
         handleIntentUri(intent)
 
         setContent {
-            StrideCoachTheme {
+            val st by vmRef.uiState.collectAsState()
+            StrideCoachTheme(
+                themeMode = st.preferences.themeMode,
+                accentName = st.preferences.accentName
+            ) {
+                val isLight = StrideThemeState.isLight
+                val navArgb = KdeNavBg.toArgb()
+                LaunchedEffect(isLight, navArgb) {
+                    if (isLight) {
+                        enableEdgeToEdge(
+                            statusBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+                            navigationBarStyle = SystemBarStyle.light(navArgb, navArgb)
+                        )
+                    } else {
+                        enableEdgeToEdge(
+                            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+                            navigationBarStyle = SystemBarStyle.dark(navArgb)
+                        )
+                    }
+                }
                 val vm: StrideCoachViewModel = viewModel(factory = factory)
                 AppShell(vm, window)
             }

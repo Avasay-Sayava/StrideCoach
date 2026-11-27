@@ -53,7 +53,9 @@ class WorkoutStateMachine(
     fun onTick(
         totalDistanceMeters: Double,
         totalElapsedMillis: Long,
-        rollingPaceSecPerKm: Int
+        rollingPaceSecPerKm: Int,
+        slopeGradePct: Double = 0.0,
+        slopeAdjustEnabled: Boolean = false
     ): Pair<LiveWorkoutSnapshot, List<CoachingEvent>> {
         val d = totalDistanceMeters
         val t = totalElapsedMillis
@@ -68,7 +70,15 @@ class WorkoutStateMachine(
 
         val act = currentStep()
         val ph = findPhase(d)
-        val bnd = ph?.paceBounds ?: act?.step?.paceBounds
+        val rawBounds = ph?.paceBounds ?: act?.step?.paceBounds
+        val bnd = if (rawBounds != null && slopeAdjustEnabled && kotlin.math.abs(slopeGradePct) >= 1.0) {
+            PaceBounds(
+                TopographyPaceEngine.adjustTargetPaceForGrade(rawBounds.fastSecPerKm, slopeGradePct),
+                TopographyPaceEngine.adjustTargetPaceForGrade(rawBounds.slowSecPerKm, slopeGradePct)
+            )
+        } else {
+            rawBounds
+        }
         val st = bnd?.evaluate(p) ?: PaceStatus.NO_SIGNAL
 
         checkPaceAlert(st, p, bnd, t, ev)

@@ -48,7 +48,7 @@ object OsmFootRouter {
         for (p in sub) {
             shape.put(JSONObject().put("lat", p.latitude).put("lon", p.longitude))
         }
-        val opts = JSONObject().put("search_radius", 25).put("gps_accuracy", 10).put("breakage_distance", 120)
+        val opts = JSONObject().put("search_radius", 65).put("gps_accuracy", 12).put("breakage_distance", 160)
         val attrs = JSONArray().put("matched.point").put("matched.type").put("matched.distance_from_trace_point")
         val flt = JSONObject().put("attributes", attrs).put("action", "include")
         val body = JSONObject()

@@ -70,7 +70,8 @@ data class StructuredWorkout(
     val title: String,
     val description: String = "",
     val segments: List<WorkoutSegment>,
-    val racePhases: List<RacePhase> = emptyList()
+    val racePhases: List<RacePhase> = emptyList(),
+    val deletedAtMillis: Long? = null
 ) {
     fun flattenSteps(): List<ExecutableStep> {
         val out = mutableListOf<ExecutableStep>()

@@ -26,6 +26,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,11 +36,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.stridecoach.running.core.data.repository.CoachPreferences
 import com.stridecoach.running.core.data.routing.OsmFootRouter
 import com.stridecoach.running.core.domain.engine.GeoMath
 import com.stridecoach.running.core.domain.engine.LatLon
 import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.ui.components.FloatingMapIconButton
+import com.stridecoach.running.ui.components.MapCameraMode
 import com.stridecoach.running.ui.components.VectorRouteMap
 import com.stridecoach.running.ui.theme.KdeBorder
 import com.stridecoach.running.ui.theme.KdeCardBg
@@ -56,15 +59,22 @@ private data class PlannedLeg(val end: LatLon, val coords: List<LatLon>)
 @Composable
 fun RoutePlannerScreen(
     refPaceSec: Int,
+    prefs: CoachPreferences,
+    userLocation: LatLon?,
+    fallbackCenter: LatLon = LatLon(32.1133, 34.8044),
     onBack: () -> Unit,
     onLaunchRoute: (List<LatLon>) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val legs = remember { mutableStateListOf<PlannedLeg>() }
     var snapStreets by remember { mutableStateOf(true) }
+    var camMode by remember { mutableStateOf(MapCameraMode.FREE_PAN) }
+    var is3d by remember(prefs.defaultMap3dEnabled) { mutableStateOf(prefs.defaultMap3dEnabled) }
     var routing by remember { mutableStateOf(false) }
+    var recenterTick by remember { mutableIntStateOf(0) }
 
     val fullPath = remember(legs.size) { flattenLegs(legs) }
+    val waypoints = remember(legs.size) { legs.map { it.end } }
     val distM = remember(fullPath) { pathDistanceMeters(fullPath) }
     val estMs = ((distM / 1000.0) * refPaceSec * 1000.0).toLong()
 
@@ -90,12 +100,37 @@ fun RoutePlannerScreen(
         VectorRouteMap(
             pts = emptyList(),
             guidePts = fullPath,
+            plannerWaypoints = waypoints,
+            userLocation = userLocation,
             interactive = true,
-            bottomPadDp = 170,
+            showUserDot = prefs.showUserLocationDot,
+            cameraMode = camMode,
+            is3dMode = is3d,
+            show3dBuildings = prefs.show3dBuildings,
+            showTerrainHillshade = prefs.showTerrainHillshade,
+            lockAutoFit = true,
+            preloadTiles = prefs.preloadNearbyTiles,
+            mapStyleMode = prefs.mapStyleMode,
+            fallbackCenter = fallbackCenter,
+            bottomPadDp = 190,
+            recenterToken = recenterTick,
+            onUserManualPan = { camMode = MapCameraMode.FREE_PAN },
             onMapTap = ::appendWaypoint,
             modifier = Modifier.fillMaxSize()
         )
-        PlannerTopBar(distM, estMs, onBack) {
+        PlannerTopBar(
+            distM = distM,
+            estMs = estMs,
+            hasPath = legs.size >= 2,
+            camMode = camMode,
+            is3d = is3d,
+            onBack = onBack,
+            onPickMode = { mode ->
+                camMode = mode
+                if (mode != MapCameraMode.FREE_PAN) recenterTick++
+            },
+            onToggle3d = { is3d = !is3d }
+        ) {
             if (legs.isNotEmpty()) legs.removeAt(legs.lastIndex)
         }
         PlannerBottomDock(
@@ -112,30 +147,54 @@ fun RoutePlannerScreen(
 }
 
 @Composable
-private fun PlannerTopBar(distM: Double, estMs: Long, onBack: () -> Unit, onUndo: () -> Unit) {
+private fun PlannerTopBar(
+    distM: Double,
+    estMs: Long,
+    hasPath: Boolean,
+    camMode: MapCameraMode,
+    is3d: Boolean,
+    onBack: () -> Unit,
+    onPickMode: (MapCameraMode) -> Unit,
+    onToggle3d: () -> Unit,
+    onUndo: () -> Unit
+) {
     val topPad = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 8.dp
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth().padding(top = topPad, start = 12.dp, end = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        FloatingMapIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
-        Surface(
-            modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(12.dp),
-            color = KdeCardBg.copy(alpha = 0.90f),
-            border = BorderStroke(1.dp, KdeBorder)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            FloatingMapIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+                color = KdeCardBg.copy(alpha = 0.90f),
+                border = BorderStroke(1.dp, KdeBorder)
             ) {
-                Text("%.2f km".format(distM / 1000.0), style = MaterialTheme.typography.titleMedium.merge(TabularNumberStyle), color = KdePurple, fontWeight = FontWeight.Bold)
-                Text("Est. ${formatDuration(estMs)}", style = MaterialTheme.typography.bodySmall.merge(TabularNumberStyle), color = KdeText)
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("%.2f km".format(distM / 1000.0), style = MaterialTheme.typography.titleMedium.merge(TabularNumberStyle), color = KdePurple, fontWeight = FontWeight.Bold)
+                    Text("Est. ${formatDuration(estMs)}", style = MaterialTheme.typography.bodySmall.merge(TabularNumberStyle), color = KdeText)
+                }
             }
+            FloatingMapIconButton(Icons.AutoMirrored.Filled.Undo, "Undo", onUndo)
         }
-        FloatingMapIconButton(Icons.AutoMirrored.Filled.Undo, "Undo", onUndo)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            MapFocusControlBar(
+                camMode = camMode,
+                is3d = is3d,
+                hasPath = hasPath,
+                onPickMode = onPickMode,
+                onToggle3d = onToggle3d
+            )
+        }
     }
 }
 
@@ -150,7 +209,7 @@ private fun PlannerBottomDock(
     onRun: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val navPad = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 10.dp
+    val navPad = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp
     val cc = FilterChipDefaults.filterChipColors(selectedContainerColor = KdePurple.copy(alpha = 0.24f), selectedLabelColor = KdePurple)
     val gc = FilterChipDefaults.filterChipColors(selectedContainerColor = PaceOnTarget.copy(alpha = 0.22f), selectedLabelColor = PaceOnTarget)
 
@@ -162,16 +221,16 @@ private fun PlannerBottomDock(
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (routing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = KdeSky)
-            Text("Tap map to draw route (mix streets & greenery seamlessly)", style = MaterialTheme.typography.labelMedium, color = KdeMuted)
+            Text("Tap map to place route points (map holds steady as you draw)", style = MaterialTheme.typography.labelMedium, color = KdeMuted)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = snapStreets, onClick = { onMode(true) }, colors = cc, label = { Text("Snap Streets") })
-                FilterChip(selected = !snapStreets, onClick = { onMode(false) }, colors = gc, label = { Text("Greenery / Freehand") })
+                FilterChip(selected = snapStreets, onClick = { onMode(true) }, colors = cc, label = { Text("Snap Streets", maxLines = 1, softWrap = false) })
+                FilterChip(selected = !snapStreets, onClick = { onMode(false) }, colors = gc, label = { Text("Greenery / Freehand", maxLines = 1, softWrap = false) })
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onLoop, enabled = hasPoints, shape = RoundedCornerShape(999.dp)) { Text("Loop") }
-                OutlinedButton(onClick = onClear, enabled = hasPoints, shape = RoundedCornerShape(999.dp)) { Text("Clear") }
+                OutlinedButton(onClick = onLoop, enabled = hasPoints, shape = RoundedCornerShape(999.dp)) { Text("Loop", maxLines = 1, softWrap = false) }
+                OutlinedButton(onClick = onClear, enabled = hasPoints, shape = RoundedCornerShape(999.dp)) { Text("Clear", maxLines = 1, softWrap = false) }
                 Button(onClick = onRun, enabled = hasPoints, shape = RoundedCornerShape(999.dp), modifier = Modifier.weight(1f)) {
-                    Text("Run Route", fontWeight = FontWeight.Bold)
+                    Text("Run Route", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                 }
             }
         }

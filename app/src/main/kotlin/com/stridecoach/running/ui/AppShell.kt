@@ -32,6 +32,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -43,22 +44,43 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.stridecoach.running.core.data.health.HealthConnectSyncManager as HcMgr
+import com.stridecoach.running.core.domain.engine.EncodedPolylineCodec
+import com.stridecoach.running.core.domain.engine.LatLon
+import com.stridecoach.running.core.domain.engine.PaceZoneClassifier
 import com.stridecoach.running.core.tracking.AutoActivityDetector
 import com.stridecoach.running.core.tracking.RunTrackingService as TrackSvc
 import com.stridecoach.running.ui.components.KdeAppBackground
+import com.stridecoach.running.ui.components.PassiveLocReading
 import com.stridecoach.running.ui.components.StaticMapSnapshotter
+import com.stridecoach.running.ui.components.rememberPassiveLocationReading
+import com.stridecoach.running.ui.components.resolveMapStyleUri
 import com.stridecoach.running.ui.screens.CoachScreen
 import com.stridecoach.running.ui.screens.DataSettingsScreen
 import com.stridecoach.running.ui.screens.HistoryAnalyticsScreen
 import com.stridecoach.running.ui.screens.LiveRunScreen
+import com.stridecoach.running.ui.screens.LoadTimeMachineScreen
+import com.stridecoach.running.ui.screens.PaceZonesDetailScreen
+import com.stridecoach.running.ui.screens.PersonalRecordsDetailScreen
 import com.stridecoach.running.ui.screens.PlanBuilderScreen
 import com.stridecoach.running.ui.screens.RoutePlannerScreen
 import com.stridecoach.running.ui.screens.RunDetailMapScreen
+import com.stridecoach.running.ui.screens.TrashScreen
 import com.stridecoach.running.ui.theme.KdeMuted
 import com.stridecoach.running.ui.theme.KdeNavBg
 import com.stridecoach.running.ui.theme.KdePurple
+import com.stridecoach.running.ui.theme.StrideThemeState
+
+enum class StatsDrillScreen {
+    LOAD_HISTORY,
+    PACE_ZONES,
+    PERSONAL_RECORDS
+}
 
 @Composable
 fun AppShell(vm: StrideCoachViewModel, win: Window) {
@@ -75,15 +97,28 @@ fun AppShell(vm: StrideCoachViewModel, win: Window) {
     val sel by vm.selectedRunDetail.collectAsState()
     val snp by vm.snapPreview.collectAsState()
     val busy by vm.isSnapping.collectAsState()
+    val topoBusy by vm.isFetchingTopo.collectAsState()
+
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var draw by rememberSaveable { mutableStateOf(false) }
+    var showTrash by rememberSaveable { mutableStateOf(false) }
+    var drillScreen by rememberSaveable { mutableStateOf<StatsDrillScreen?>(null) }
+
     val io = ioHook(vm)
     val sb = remember { SnackbarHostState() }
     val ctx = LocalContext.current
+    val resolvedMapStyle = resolveMapStyleUri(st.preferences.mapStyleMode, StrideThemeState.isLight)
+    val passiveReading = rememberPassiveLocationReading(tab == 1 || draw)
+    val passiveLoc = passiveReading?.latLon
+    val fallbackMapCenter = remember(passiveLoc, st.runs.firstOrNull()?.id) {
+        passiveLoc
+            ?: st.runs.firstOrNull()?.let { EncodedPolylineCodec.decode(it.encodedPolyline).firstOrNull() }
+            ?: LatLon(32.1133, 34.8044)
+    }
 
     Perms(vm)
-    LaunchedEffect(st.runs.size) {
-        if (st.runs.isNotEmpty()) StaticMapSnapshotter.preloadAll(ctx, st.runs)
+    LaunchedEffect(st.runs.size, resolvedMapStyle) {
+        if (st.runs.isNotEmpty()) StaticMapSnapshotter.preloadAll(ctx, st.runs, resolvedMapStyle)
     }
     LaunchedEffect(st.statusBanner) {
         val m = st.statusBanner ?: return@LaunchedEffect
@@ -95,23 +130,98 @@ fun AppShell(vm: StrideCoachViewModel, win: Window) {
         val run = sel
         if (run != null) {
             BackHandler { vm.clearSelectedRun() }
+            val currentKindPace = remember(st.runs, run.activityKind, st.telemetry.currentBaselinePaceSec) {
+                PaceZoneClassifier.computeCurrentBaselinePace(
+                    st.runs,
+                    run.activityKind,
+                    st.telemetry.currentBaselinePaceSec
+                )
+            }
             RunDetailMapScreen(
-                run, st.activePlan?.targetPaceSecPerKm ?: 295, snp, busy,
-                vm::snapSelectedRun, vm::applySnappedRun, vm::clearSnapPreview,
-                vm::clearSelectedRun, vm::trimSelectedRunTail, io.gpx
+                run = run,
+                prefs = st.preferences,
+                currentBaselinePaceSec = currentKindPace,
+                snapPreview = snp,
+                isSnapping = busy,
+                isFetchingTopo = topoBusy,
+                onToggleSnap = vm::toggleSnapForSelectedRun,
+                onToggleSnapSection = vm::toggleSnapUnsnappedSection,
+                onSnapAllGreenery = vm::setSnapAllGreenery,
+                onFetchDemElevation = { vm.enrichSelectedRunElevation(silent = false) },
+                onMoveToTrash = { vm.moveRunToTrash(run.id) },
+                onBack = vm::clearSelectedRun,
+                onTrimRange = vm::trimSelectedRunRange,
+                onExportGpx = io.gpx
             )
             return@KdeAppBackground
         }
         if (draw) {
             BackHandler { draw = false }
-            RoutePlannerScreen(st.activePlan?.targetPaceSecPerKm ?: 295, { draw = false }) { pts ->
+            RoutePlannerScreen(
+                refPaceSec = st.telemetry.currentBaselinePaceSec,
+                prefs = st.preferences,
+                userLocation = passiveLoc,
+                fallbackCenter = fallbackMapCenter,
+                onBack = { draw = false }
+            ) { pts ->
                 vm.setPlannedGuideRoute(pts)
                 draw = false
                 tab = 1
             }
             return@KdeAppBackground
         }
-        Tabs(tab, vm, st, io, sb, { draw = true }) { tab = it }
+        if (showTrash) {
+            BackHandler { showTrash = false }
+            TrashScreen(
+                trashedRuns = st.trashedRuns,
+                trashedTemplates = st.trashedTemplates,
+                onBack = { showTrash = false },
+                onRestoreRun = vm::restoreRunFromTrash,
+                onDeleteRunForever = vm::deleteRunForever,
+                onRestoreTemplate = vm::restoreTemplateFromTrash,
+                onDeleteTemplateForever = vm::deleteTemplateForever,
+                onRestoreAll = vm::restoreAllFromTrash,
+                onEmptyTrash = vm::emptyTrash
+            )
+            return@KdeAppBackground
+        }
+        val activeDrill = drillScreen
+        if (activeDrill != null) {
+            BackHandler { drillScreen = null }
+            when (activeDrill) {
+                StatsDrillScreen.LOAD_HISTORY -> LoadTimeMachineScreen(
+                    runs = st.runs,
+                    walks = st.walkLogs,
+                    onBack = { drillScreen = null },
+                    onSelectRun = vm::loadRunDetail
+                )
+                StatsDrillScreen.PACE_ZONES -> PaceZonesDetailScreen(
+                    runs = st.runs,
+                    baselinePaceSec = st.telemetry.currentBaselinePaceSec,
+                    onBack = { drillScreen = null }
+                )
+                StatsDrillScreen.PERSONAL_RECORDS -> PersonalRecordsDetailScreen(
+                    prHistories = st.telemetry.prHistories,
+                    runs = st.runs,
+                    onBack = { drillScreen = null },
+                    onSelectRun = vm::loadRunDetail
+                )
+            }
+            return@KdeAppBackground
+        }
+
+        Tabs(
+            t = tab,
+            vm = vm,
+            st = st,
+            io = io,
+            sb = sb,
+            passiveReading = passiveReading,
+            fallbackMapCenter = fallbackMapCenter,
+            onDraw = { draw = true },
+            onOpenTrash = { showTrash = true },
+            onOpenDrill = { drillScreen = it }
+        ) { tab = it }
     }
 }
 
@@ -122,30 +232,74 @@ private fun Tabs(
     st: CoachUiState,
     io: IoRef,
     sb: SnackbarHostState,
+    passiveReading: PassiveLocReading?,
+    fallbackMapCenter: LatLon,
     onDraw: () -> Unit,
+    onOpenTrash: () -> Unit,
+    onOpenDrill: (StatsDrillScreen) -> Unit,
     onPick: (Int) -> Unit
 ) {
+    val ctx = LocalContext.current
+    val owner = LocalLifecycleOwner.current
     val sA = rememberLazyListState()
     val sH = rememberLazyListState()
-    val hc = hcHook(vm, t)
+    var resumeTick by remember { mutableIntStateOf(0) }
+    var battOk by remember { mutableStateOf(isBattOk(ctx)) }
+
+    DisposableEffect(owner, ctx) {
+        val obs = LifecycleEventObserver { _, ev ->
+            if (ev == Lifecycle.Event.ON_RESUME) {
+                battOk = isBattOk(ctx)
+                resumeTick++
+            }
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+
+    val battLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        battOk = isBattOk(ctx)
+    }
+    val hc = hcHook(vm, t, resumeTick)
+
     Scaffold(
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(sb) },
         bottomBar = { NavBar(t, onPick) }
     ) { pad ->
         val mod = if (t == 1) Modifier.padding(bottom = pad.calculateBottomPadding()) else Modifier.padding(pad)
-        Box(modifier = mod) { TabBody(t, vm, st, io, hc, sA, sH, onDraw, onPick) }
+        Box(modifier = mod) {
+            TabBody(
+                t = t,
+                vm = vm,
+                st = st,
+                io = io,
+                hc = hc,
+                battOk = battOk,
+                passiveReading = passiveReading,
+                fallbackMapCenter = fallbackMapCenter,
+                sA = sA,
+                sH = sH,
+                onDraw = onDraw,
+                onOpenTrash = onOpenTrash,
+                onOpenDrill = onOpenDrill,
+                onTab = onPick,
+                onAskBattery = { askBatt(ctx) { intent -> battLauncher.launch(intent) } }
+            )
+        }
     }
 }
 
 private data class HcRef(val av: Boolean, val ok: Boolean, val ask: () -> Unit)
 
 @Composable
-private fun hcHook(vm: StrideCoachViewModel, t: Int): HcRef {
+private fun hcHook(vm: StrideCoachViewModel, t: Int, resumeTick: Int): HcRef {
     val c = LocalContext.current
     var ok by remember { mutableStateOf(false) }
     val av = remember(c) { HcMgr.isAvailable(c) }
-    LaunchedEffect(av, t) { if (av) ok = HcMgr.hasPermissions(c) }
+    LaunchedEffect(av, t, resumeTick) {
+        if (av) ok = HcMgr.hasPermissions(c)
+    }
     val q = rememberLauncherForActivityResult(PermissionController.createRequestPermissionResultContract()) { got ->
         val g = got.containsAll(HcMgr.requiredPermissions)
         ok = g
@@ -170,28 +324,44 @@ private fun Perms(vm: StrideCoachViewModel) {
     }
 }
 
-private data class IoRef(val impB: () -> Unit, val expB: () -> Unit, val impT: () -> Unit, val gpx: () -> Unit)
+private data class IoRef(
+    val impB: () -> Unit,
+    val expB: () -> Unit,
+    val impT: () -> Unit,
+    val gpx: () -> Unit,
+    val pickFolder: () -> Unit,
+    val restoreVault: () -> Unit
+)
 
 @Composable
 private fun ioHook(vm: StrideCoachViewModel): IoRef {
-    val cr = LocalContext.current.contentResolver
+    val ctx = LocalContext.current
+    val cr = ctx.contentResolver
     val a = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u ->
-        if (u != null) vm.importBackupFromUri(cr, u)
+        if (u != null) vm.importBackupFromUri(ctx, cr, u)
     }
     val b = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { u ->
         if (u != null) vm.exportBackupToUri(cr, u)
     }
     val c = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u ->
-        if (u != null) vm.importTimelineFromUri(cr, u)
+        if (u != null) vm.importTimelineFromUri(ctx, cr, u)
     }
     val d = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/gpx+xml")) { u ->
         if (u != null) vm.exportSelectedRunGpxToUri(cr, u)
+    }
+    val tree = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { u ->
+        if (u != null) vm.setSyncFolderUri(ctx, u)
+    }
+    val vault = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u ->
+        if (u != null) vm.restoreVaultFromUri(cr, u)
     }
     return IoRef(
         impB = { a.launch(arrayOf("*/*")) },
         expB = { b.launch("running-tracker-export.backup") },
         impT = { c.launch(arrayOf("application/json", "*/*")) },
-        gpx = { d.launch("stridecoach-run.gpx") }
+        gpx = { d.launch("stridecoach-run.gpx") },
+        pickFolder = { tree.launch(null) },
+        restoreVault = { vault.launch(arrayOf("application/json", "*/*")) }
     )
 }
 
@@ -202,7 +372,7 @@ private fun NavBar(t: Int, onPick: (Int) -> Unit) {
         "Live" to Icons.AutoMirrored.Filled.DirectionsRun,
         "Plans" to Icons.Default.CalendarMonth,
         "Stats" to Icons.Default.BarChart,
-        "Data" to Icons.Default.Settings
+        "Settings" to Icons.Default.Settings
     )
     NavigationBar(containerColor = KdeNavBg) {
         list.forEachIndexed { i, (lbl, ico) ->
@@ -210,7 +380,7 @@ private fun NavBar(t: Int, onPick: (Int) -> Unit) {
                 selected = t == i,
                 onClick = { onPick(i) },
                 icon = { Icon(ico, contentDescription = lbl) },
-                label = { Text(lbl) },
+                label = { Text(lbl, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = KdePurple,
                     selectedTextColor = KdePurple,
@@ -230,10 +400,16 @@ private fun TabBody(
     st: CoachUiState,
     io: IoRef,
     hc: HcRef,
+    battOk: Boolean,
+    passiveReading: PassiveLocReading?,
+    fallbackMapCenter: LatLon,
     sA: LazyListState,
     sH: LazyListState,
     onDraw: () -> Unit,
-    onTab: (Int) -> Unit
+    onOpenTrash: () -> Unit,
+    onOpenDrill: (StatsDrillScreen) -> Unit,
+    onTab: (Int) -> Unit,
+    onAskBattery: () -> Unit
 ) {
     val c = LocalContext.current
     val lv by vm.liveTracking.collectAsState()
@@ -241,28 +417,70 @@ private fun TabBody(
     when (t) {
         0 -> CoachScreen(st, { w, id -> vm.startWorkout(c, w, id); onTab(1) }, vm::applyWalkingDowngrade, vm::applyWalkingSwap, vm::logManualWalkToday)
         1 -> LiveRunScreen(
-            lv, st.activePlan?.targetPaceSecPerKm ?: 295, gd, st.preferences.keepScreenAwake,
-            st.todayDay?.workout?.title,
-            st.todayDay?.workout?.let { w -> { vm.startWorkout(c, w, st.todayDay?.id) } },
-            onDraw,
-            { on -> vm.updatePreferences { it.copy(keepScreenAwake = on) } },
-            { vm.startWorkout(c, null, null) },
-            { TrackSvc.sendAction(c, TrackSvc.ACTION_PAUSE_RESUME) },
-            { TrackSvc.sendAction(c, TrackSvc.ACTION_NEXT_STEP) },
-            { TrackSvc.sendAction(c, TrackSvc.ACTION_STOP) }
+            liveState = lv,
+            prefs = st.preferences,
+            refPaceSec = st.telemetry.currentBaselinePaceSec,
+            guidePts = gd,
+            userLocation = passiveReading?.latLon,
+            passiveSpeedKmh = passiveReading?.speedKmh ?: 0f,
+            fallbackCenter = fallbackMapCenter,
+            todayWorkoutLabel = st.todayDay?.workout?.title,
+            onStartTodayWorkout = st.todayDay?.workout?.let { w -> { vm.startWorkout(c, w, st.todayDay?.id) } },
+            onOpenPlanner = onDraw,
+            onToggleWakeLock = { on -> vm.updatePreferences { it.copy(keepScreenAwake = on) } },
+            onStartActivity = { kind -> vm.startWorkout(c, null, null, kind) },
+            onPauseResume = { TrackSvc.sendAction(c, TrackSvc.ACTION_PAUSE_RESUME) },
+            onNextStep = { TrackSvc.sendAction(c, TrackSvc.ACTION_NEXT_STEP) },
+            onStopRun = { TrackSvc.sendAction(c, TrackSvc.ACTION_STOP) }
         )
         2 -> PlanBuilderScreen(
-            st, vm::activatePlanConfig, vm::recalibrateActivePlanFrom5k, vm::saveWorkoutTemplate,
-            { w -> vm.startWorkout(c, w, null); onTab(1) }, onDraw
+            state = st,
+            onActivatePlan = vm::activatePlanConfig,
+            onRecalibrate5k = vm::recalibrateActivePlanFrom5k,
+            onSaveTemplate = vm::saveWorkoutTemplate,
+            onTrashTemplate = vm::moveTemplateToTrash,
+            onStartWorkout = { w -> vm.startWorkout(c, w, null); onTab(1) },
+            onOpenRoutePlanner = onDraw
         )
-        3 -> HistoryAnalyticsScreen(st, vm::loadRunDetail, sA, sH)
+        3 -> HistoryAnalyticsScreen(
+            state = st,
+            onSelectRun = vm::loadRunDetail,
+            onTrashRun = vm::moveRunToTrash,
+            onOpenTrash = onOpenTrash,
+            onOpenLoadHistory = { onOpenDrill(StatsDrillScreen.LOAD_HISTORY) },
+            onOpenPaceZones = { onOpenDrill(StatsDrillScreen.PACE_ZONES) },
+            onOpenPersonalRecords = { onOpenDrill(StatsDrillScreen.PERSONAL_RECORDS) },
+            analyticsScrollState = sA,
+            historyScrollState = sH
+        )
         4 -> DataSettingsScreen(
-            st.preferences, st.isImporting, st.lastImportSummary, st.runs.size, st.walkLogs.size,
-            isBattOk(c), hc.av, hc.ok, hc.ask, { vm.syncHealthConnect(c) },
-            { on -> vm.setAutoDetectRuns(c, on) }, vm::updatePreferences, io.impB, io.expB, io.impT
-        ) { askBatt(c) }
+            prefs = st.preferences,
+            busy = st.isImporting,
+            summary = st.lastImportSummary,
+            activityCounts = QuadCounts(st.telemetry.runCount, st.telemetry.walkCount, st.telemetry.cycleCount, st.telemetry.walkDaysCount),
+            trashCount = st.trashedRuns.size + st.trashedTemplates.size,
+            battOk = battOk,
+            hcAvail = hc.av,
+            hcOk = hc.ok,
+            onHcConnect = hc.ask,
+            onHcSync = { vm.syncHealthConnect(c) },
+            onHealthAutoSync = { on -> vm.setHealthAutoSync(c, on) },
+            onAutoDetect = { on -> vm.setAutoDetectRuns(c, on) },
+            onAutoStart = { on -> vm.setAutoStartOnRunDetected(c, on) },
+            onPickSyncFolder = io.pickFolder,
+            onSyncFolderNow = { vm.syncFolderNow(c, forceAll = false) },
+            onRestoreVaultFile = io.restoreVault,
+            onOpenTrash = onOpenTrash,
+            onUpdate = vm::updatePreferences,
+            onImpBak = io.impB,
+            onExpBak = io.expB,
+            onImpTl = io.impT,
+            onBattReq = onAskBattery
+        )
     }
 }
+
+data class QuadCounts(val runs: Int, val walks: Int, val cycles: Int, val walkDays: Int)
 
 private fun isBattOk(c: Context): Boolean {
     val pm = c.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -270,9 +488,9 @@ private fun isBattOk(c: Context): Boolean {
 }
 
 @SuppressLint("BatteryLife")
-private fun askBatt(c: Context) {
+private fun askBatt(c: Context, launch: (Intent) -> Unit) {
     val u = Uri.parse("package:${c.packageName}")
     val ask = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, u)
     val fb = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, u)
-    runCatching { c.startActivity(ask) }.onFailure { c.startActivity(fb) }
+    runCatching { launch(ask) }.onFailure { launch(fb) }
 }

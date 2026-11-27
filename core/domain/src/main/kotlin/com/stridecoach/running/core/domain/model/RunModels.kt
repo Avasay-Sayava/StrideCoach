@@ -6,7 +6,17 @@ import kotlinx.serialization.Serializable
 enum class RunSource {
     RECORDED,
     BACKUP_IMPORT,
-    HEALTH_CONNECT
+    HEALTH_CONNECT,
+    TIMELINE_IMPORT
+}
+
+@Serializable
+enum class ActivityKind(val label: String, val singularTag: String) {
+    RUNNING("Runs", "Run"),
+    WALKING("Walks", "Walk"),
+    CYCLING("Rides", "Ride"),
+    HIKING("Hikes", "Hike"),
+    OTHER("Other", "Workout")
 }
 
 @Serializable
@@ -80,7 +90,20 @@ data class RunRecord(
     val totalSteps: Int = 0,
     val avgCadenceSpm: Int = 0,
     val elevGainM: Int = 0,
-    val segs: List<DetectedSegment> = emptyList()
+    val segs: List<DetectedSegment> = emptyList(),
+    val activityKind: ActivityKind = ActivityKind.RUNNING,
+    val rawEncodedPolyline: String = "",
+    val snappedEncodedPolyline: String = "",
+    val isSnapped: Boolean = false,
+    val snapStreetPct: Int = 0,
+    val snapGreeneryPct: Int = 0,
+    val snapLoopsKept: Int = 0,
+    val strideStabilityPct: Int = 0,
+    val elevLossM: Int = 0,
+    val minAltM: Int? = null,
+    val maxAltM: Int? = null,
+    val gradeAdjustedPaceSec: Int = 0,
+    val deletedAtMillis: Long? = null
 ) {
     fun km(): Double = distanceMeters / 1000.0
     fun hasTrack(): Boolean = trackPoints.size >= 2 || encodedPolyline.isNotBlank()

@@ -91,6 +91,7 @@ class RunningTrackerBackupAdapter(
             name = r.name.ifBlank { "Imported Run" },
             description = r.description,
             encodedPolyline = r.path,
+            rawEncodedPolyline = r.path,
             splits = sp,
             trackPoints = pts,
             source = RunSource.BACKUP_IMPORT

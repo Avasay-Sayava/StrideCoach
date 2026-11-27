@@ -13,13 +13,18 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -32,9 +37,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.stridecoach.running.core.domain.engine.EncodedPolylineCodec
 import com.stridecoach.running.core.domain.engine.LatLon
 import com.stridecoach.running.core.domain.model.RunRecord
+import com.stridecoach.running.ui.theme.KdeBgDeep
+import com.stridecoach.running.ui.theme.KdeCardBg
+import com.stridecoach.running.ui.theme.KdeMuted
+import com.stridecoach.running.ui.theme.StrideThemeState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
@@ -63,26 +73,32 @@ internal data class ThumbCam(val cLat: Double, val cLon: Double, val zoom: Doubl
 object StaticMapSnapshotter {
     private const val W = 680
     private const val H = 280
-    private const val PAD_Y = 30
+    private const val PAD_Y = 64
     private const val H_SNAP = H + PAD_Y * 2
 
-    private val ram = LruCache<String, ImageBitmap>(48)
+    private val ram = LruCache<String, ImageBitmap>(64)
     private val glLock = Mutex()
 
-    suspend fun preloadAll(ctx: Context, runs: List<RunRecord>) {
-        withContext(Dispatchers.Default) {
-            for (r in runs) {
-                if (r.hasTrack()) runCatching { loadOrRender(ctx, r) }
-            }
+    suspend fun preloadAll(ctx: Context, runs: List<RunRecord>, styleUri: String = OPENFREEMAP_DARK_STYLE) {
+        kotlinx.coroutines.delay(1_800L)
+        val subset = runs.asSequence().filter { it.hasTrack() }.take(8).toList()
+        for (r in subset) {
+            runCatching { loadOrRender(ctx, r, styleUri) }
+            kotlinx.coroutines.delay(180L)
         }
     }
 
-    suspend fun loadOrRender(ctx: Context, run: RunRecord): ImageBitmap? {
+    suspend fun loadOrRender(
+        ctx: Context,
+        run: RunRecord,
+        styleUri: String = OPENFREEMAP_DARK_STYLE
+    ): ImageBitmap? {
         if (!run.hasTrack()) return null
-        val key = "${run.id}_${run.encodedPolyline.hashCode()}_${run.distanceMeters}"
+        val styleTag = styleUri.substringAfterLast('/')
+        val key = "${run.id}_${run.encodedPolyline.hashCode()}_${run.distanceMeters}_${run.isSnapped}_$styleTag"
         ram.get(key)?.let { return it }
 
-        val dir = withContext(Dispatchers.IO) { File(ctx.cacheDir, "vec_thumbs_v2").apply { mkdirs() } }
+        val dir = withContext(Dispatchers.IO) { File(ctx.cacheDir, "vec_thumbs_v3").apply { mkdirs() } }
         val file = File(dir, "$key.png")
         val disk = withContext(Dispatchers.IO) { decodeCached(file) }
         if (disk != null) {
@@ -94,7 +110,7 @@ object StaticMapSnapshotter {
         if (pts.size < 2) return null
 
         val rendered = glLock.withLock {
-            decodeCached(file) ?: renderVectorSnapshot(ctx, pts, file)
+            decodeCached(file) ?: renderVectorSnapshot(ctx, pts, styleUri, file)
         }
         rendered?.let { ram.put(key, it) }
         return rendered
@@ -149,11 +165,28 @@ object StaticMapSnapshotter {
         return (1.0 - ln(tan(r) + 1.0 / cos(r)) / PI) / 2.0
     }
 
-    private suspend fun renderVectorSnapshot(ctx: Context, pts: List<LatLon>, dest: File): ImageBitmap? {
-        val cam = computeThumbCam(pts)
-        val bmp = withTimeoutOrNull(8_000L) {
-            withContext(Dispatchers.Main) { takeMapLibreSnap(ctx.applicationContext, cam, pts) }
+    private suspend fun renderVectorSnapshot(
+        ctx: Context,
+        pts: List<LatLon>,
+        styleUri: String,
+        dest: File
+    ): ImageBitmap? {
+        val sampled = if (pts.size <= 180) pts else {
+            val step = (pts.size / 180).coerceAtLeast(1)
+            pts.filterIndexed { i, _ -> i == 0 || i == pts.lastIndex || i % step == 0 }
+        }
+        val cam = computeThumbCam(sampled)
+        val rawPair = withTimeoutOrNull(8_000L) {
+            withContext(Dispatchers.Main) { takeMapLibreSnap(ctx.applicationContext, cam, sampled, styleUri) }
         } ?: return null
+        val bmp = withContext(Dispatchers.Default) {
+            val (raw, pxPts) = rawPair
+            val cropY = PAD_Y.coerceAtMost((raw.height - H).coerceAtLeast(0))
+            val cropH = H.coerceAtMost(raw.height)
+            val cropped = Bitmap.createBitmap(raw, 0, cropY, raw.width, cropH)
+            drawRouteOverlay(cropped, pxPts.map { PointF(it.x, it.y - cropY) })
+            cropped
+        }
         withContext(Dispatchers.IO) {
             runCatching { FileOutputStream(dest).use { bmp.compress(Bitmap.CompressFormat.PNG, 92, it) } }
         }
@@ -163,34 +196,33 @@ object StaticMapSnapshotter {
     private suspend fun takeMapLibreSnap(
         ctx: Context,
         cam: ThumbCam,
-        pts: List<LatLon>
-    ): Bitmap? = suspendCancellableCoroutine { cont ->
+        pts: List<LatLon>,
+        styleUri: String
+    ): Pair<Bitmap, List<PointF>>? = suspendCancellableCoroutine { cont ->
         val pos = CameraPosition.Builder().target(LatLng(cam.cLat, cam.cLon)).zoom(cam.zoom).build()
         val opts = MapSnapshotter.Options(W, H_SNAP)
-            .withStyleBuilder(Style.Builder().fromUri(OPENFREEMAP_DARK_STYLE))
+            .withStyleBuilder(Style.Builder().fromUri(styleUri))
             .withCameraPosition(pos)
             .withLogo(false)
 
         val snap = MapSnapshotter(ctx, opts)
-        cont.invokeOnCancellation { snap.cancel() }
+        cont.invokeOnCancellation { runCatching { snap.cancel() } }
         snap.start(
             { res ->
-                runCatching {
+                try {
                     val raw = res.bitmap
-                    val cropY = PAD_Y.coerceAtMost((raw.height - H).coerceAtLeast(0))
-                    val cropH = H.coerceAtMost(raw.height)
-                    val bmp = Bitmap.createBitmap(raw, 0, cropY, raw.width, cropH)
-                    val pxPts = pts.map { p ->
-                        val pf = res.pixelForLatLng(LatLng(p.latitude, p.longitude))
-                        PointF(pf.x, pf.y - cropY)
-                    }
-                    drawRouteOverlay(bmp, pxPts)
-                    if (cont.isActive) cont.resume(bmp)
-                }.onFailure {
+                    val pxPts = pts.map { p -> res.pixelForLatLng(LatLng(p.latitude, p.longitude)) }
+                    if (cont.isActive) cont.resume(raw to pxPts)
+                } catch (_: Throwable) {
                     if (cont.isActive) cont.resume(null)
+                } finally {
+                    runCatching { snap.cancel() }
                 }
             },
-            { _ -> if (cont.isActive) cont.resume(null) }
+            { _ ->
+                runCatching { snap.cancel() }
+                if (cont.isActive) cont.resume(null)
+            }
         )
     }
 
@@ -229,25 +261,43 @@ object StaticMapSnapshotter {
 @Composable
 fun StaticRouteMapThumbnail(
     run: RunRecord,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    styleUri: String = resolveMapStyleUri("MATCH_THEME", StrideThemeState.isLight),
+    showAttribution: Boolean = true
 ) {
     val ctx = LocalContext.current
-    var img by remember(run.id, run.encodedPolyline) { mutableStateOf<ImageBitmap?>(null) }
+    var img by remember(run.id, run.encodedPolyline, run.isSnapped, styleUri) { mutableStateOf<ImageBitmap?>(null) }
 
-    LaunchedEffect(run.id, run.encodedPolyline, run.distanceMeters) {
-        img = StaticMapSnapshotter.loadOrRender(ctx, run)
+    LaunchedEffect(run.id, run.encodedPolyline, run.distanceMeters, run.isSnapped, styleUri) {
+        img = StaticMapSnapshotter.loadOrRender(ctx, run, styleUri)
     }
 
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF16191D))
+            .background(KdeBgDeep)
     ) {
         val bmp = img
         if (bmp != null) {
             Image(bmp, "Route map preview", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         } else {
             VectorPlaceholderCanvas(run.encodedPolyline)
+        }
+        if (showAttribution) {
+            Surface(
+                modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp),
+                shape = RoundedCornerShape(6.dp),
+                color = KdeCardBg.copy(alpha = 0.84f)
+            ) {
+                Text(
+                    text = "© OpenFreeMap • OSM",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                    color = KdeMuted,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
         }
     }
 }
@@ -258,7 +308,7 @@ private fun VectorPlaceholderCanvas(poly: String) {
     val cam = remember(pts) { if (pts.size >= 2) StaticMapSnapshotter.computeThumbCam(pts) else null }
 
     ComposeCanvas(modifier = Modifier.fillMaxSize()) {
-        val grid = Color(0xFF23272E)
+        val grid = if (StrideThemeState.isLight) Color(0xFFDCE2EC) else Color(0xFF23272E)
         val step = 28.dp.toPx()
         var gx = 0f
         while (gx < size.width) {

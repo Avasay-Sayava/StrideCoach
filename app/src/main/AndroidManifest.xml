@@ -78,5 +78,18 @@
         <receiver
             android:name="com.stridecoach.running.core.tracking.ActivityTransitionReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".widget.LiveWorkoutWidgetProvider"
+            android:exported="true"
+            android:label="StrideCoach Live">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.samsung.android.intent.action.REQUEST_SERVICEBOX_REMOTEVIEWS" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/live_workout_widget_info" />
+        </receiver>
     </application>
 </manifest>

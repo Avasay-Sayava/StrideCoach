@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.domain.engine.WalkingLoadAlert
 import com.stridecoach.running.core.domain.model.DayRole
@@ -64,8 +66,10 @@ fun CoachScreen(
         state.activePlan?.let { PlanHeroCard(it, state) }
         state.walkingAlert?.let { WalkAlertCard(it, onApplyDowngrade, onApplySwap) }
         TodayWorkoutCard(state.todayDay, onStartWorkout)
-        state.plannedDays.firstOrNull { it.dayRole == DayRole.RACE_DAY }?.let { race ->
-            RaceModeCard(race, onStartWorkout)
+        if (state.preferences.showCompetitionFinale) {
+            state.plannedDays.firstOrNull { it.dayRole == DayRole.RACE_DAY }?.let { race ->
+                RaceModeCard(race, onStartWorkout)
+            }
         }
         QuickWalkCard(onLogManualWalk)
     }
@@ -85,8 +89,8 @@ private fun PlanHeroCard(plan: TrainingPlanConfig, state: CoachUiState) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(plan.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            StatusPill("${formatPace(plan.targetPaceSecPerKm)} /km", KdePurple)
+            Text(plan.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).padding(end = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            StatusPill("${formatPace(state.telemetry.currentBaselinePaceSec)} /km", KdePurple)
         }
         Text(
             "$left days to race day",
@@ -98,7 +102,7 @@ private fun PlanHeroCard(plan: TrainingPlanConfig, state: CoachUiState) {
         TelemetryStatStrip(
             items = listOf(
                 "%.1f km".format(state.telemetry.totalRunKm) to "Runs",
-                "${state.runs.size}" to "Logged",
+                "${state.telemetry.runCount}" to "Logged",
                 "%.1f km".format(walkToday) to "Walk Today"
             )
         )
@@ -112,15 +116,19 @@ private fun WalkAlertCard(alert: WalkingLoadAlert, onDowngrade: () -> Unit, onSw
         borderColor = PaceTooFast.copy(alpha = 0.65f),
         bgColor = PaceTooFast.copy(alpha = 0.12f)
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Heavy Walking Load", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Heavy Walking Load", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).padding(end = 8.dp))
             StatusPill("$km km ${alert.triggerDayLabel}", PaceTooFast)
         }
         Text("Protect fresh legs before today's fast session:", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onDowngrade, shape = RoundedCornerShape(999.dp)) { Text("Downgrade Easy") }
+            Button(onClick = onDowngrade, shape = RoundedCornerShape(999.dp)) {
+                Text("Downgrade Easy", maxLines = 1, softWrap = false)
+            }
             if (alert.canSwapWithTomorrow) {
-                OutlinedButton(onClick = onSwap, shape = RoundedCornerShape(999.dp)) { Text("Swap w/ Rest") }
+                OutlinedButton(onClick = onSwap, shape = RoundedCornerShape(999.dp)) {
+                    Text("Swap w/ Rest", maxLines = 1, softWrap = false)
+                }
             }
         }
     }
@@ -129,7 +137,7 @@ private fun WalkAlertCard(alert: WalkingLoadAlert, onDowngrade: () -> Unit, onSw
 @Composable
 private fun TodayWorkoutCard(today: PlannedDay?, onStart: (StructuredWorkout?, String?) -> Unit) {
     StrideCard {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("TODAY'S SESSION", style = MaterialTheme.typography.labelLarge, color = KdeMuted, fontWeight = FontWeight.Bold)
             StatusPill(today?.dayRole?.label ?: "Open Run", KdeSky)
         }
@@ -137,7 +145,9 @@ private fun TodayWorkoutCard(today: PlannedDay?, onStart: (StructuredWorkout?, S
         if (w == null) {
             Text("Rest & Recover", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text("Keep walking light and hydrate.", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
-            OutlinedButton(onClick = { onStart(null, null) }, shape = RoundedCornerShape(999.dp)) { Text("Start Open Run") }
+            OutlinedButton(onClick = { onStart(null, null) }, shape = RoundedCornerShape(999.dp)) {
+                Text("Start Open Run", maxLines = 1, softWrap = false)
+            }
         } else {
             WorkoutPreviewBody(w, today.id, onStart)
         }
@@ -156,10 +166,12 @@ private fun WorkoutPreviewBody(w: StructuredWorkout, dayId: String, onStart: (St
         }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { onStart(w, dayId) }, shape = RoundedCornerShape(999.dp), modifier = Modifier.weight(1f)) {
-            Text("Start Guided Run", fontWeight = FontWeight.Bold)
+        Button(onClick = { onStart(w, dayId) }, shape = RoundedCornerShape(999.dp), modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)) {
+            Text("Start Guided Run", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
         }
-        OutlinedButton(onClick = { onStart(null, null) }, shape = RoundedCornerShape(999.dp)) { Text("Open Run") }
+        OutlinedButton(onClick = { onStart(null, null) }, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)) {
+            Text("Open Run", maxLines = 1, softWrap = false)
+        }
     }
 }
 
@@ -168,11 +180,13 @@ private fun RaceModeCard(race: PlannedDay, onStart: (StructuredWorkout?, String?
     val w = race.workout ?: return
     StrideCard {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(modifier = Modifier.weight(1f).padding(end = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Race-Day Pacer Mode", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text("3-phase pacing + live finish projection", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
             }
-            Button(onClick = { onStart(w, race.id) }, shape = RoundedCornerShape(999.dp)) { Text("Launch") }
+            Button(onClick = { onStart(w, race.id) }, shape = RoundedCornerShape(999.dp)) {
+                Text("Launch", maxLines = 1, softWrap = false)
+            }
         }
     }
 }
@@ -188,7 +202,7 @@ private fun QuickWalkCard(onLog: (Int) -> Unit) {
                 val km = input.toDoubleOrNull() ?: return@Button
                 onLog((km * 1000.0).toInt())
                 input = ""
-            }) { Text("Save") }
+            }) { Text("Save", maxLines = 1, softWrap = false) }
         }
     }
 }
