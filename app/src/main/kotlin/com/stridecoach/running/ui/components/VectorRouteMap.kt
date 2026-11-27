@@ -117,6 +117,13 @@ private class VectorMapHolder {
     var lastHeadKey: String = ""
     var lastNorthLocked: Boolean? = null
     var smoothFollowBearing: Double? = null
+    var camAnimUntilMs: Long = 0L
+    var smoothCamLat: Double? = null
+    var smoothCamLon: Double? = null
+    var smoothCamZoom: Double? = null
+    var smoothCamTilt: Double? = null
+    var lastCamStepNs: Long = 0L
+    var camBlendActive: Boolean = false
     val sliceScratch = ArrayList<Point>(512)
     var activeHiAnim: ValueAnimator? = null
     val mainHandler = Handler(Looper.getMainLooper())
@@ -257,7 +264,7 @@ fun VectorRouteMap(
                 cameraMode, is3dMode, show3dBuildings, showTerrainHillshade, keepCenteredOnSheetDrag,
                 lockAutoFit, preloadTiles, styleUri, liveHeadingDeg, fallbackCenter,
                 effectiveTopPx, effectiveBottomPx, fitTopClearPx, fitBottomClearPx, fitSidePx,
-                effectiveHiBottomPx, recenterToken, northLockedInFollow, resetNorthToken
+                effectiveHiBottomPx, recenterToken, playing, northLockedInFollow, resetNorthToken
             )
         }
     }
@@ -368,7 +375,7 @@ fun VectorRouteMap(
                     cameraMode, is3dMode, show3dBuildings, showTerrainHillshade, keepCenteredOnSheetDrag,
                     lockAutoFit, preloadTiles, styleUri, liveHeadingDeg, fallbackCenter,
                     effectiveTopPx, effectiveBottomPx, fitTopClearPx, fitBottomClearPx, fitSidePx,
-                    effectiveHiBottomPx, recenterToken, northLockedInFollow, resetNorthToken
+                    effectiveHiBottomPx, recenterToken, playing, northLockedInFollow, resetNorthToken
                 )
             }
         },
@@ -523,6 +530,7 @@ private fun syncVectorScene(
     fitSidePx: Int,
     hiBottomOcclusionPx: Int,
     recenter: Int,
+    playing: Boolean,
     northLocked: Boolean,
     resetNorth: Int
 ) {
@@ -568,7 +576,7 @@ private fun syncVectorScene(
     syncHead(h, st, validPts, head, showHead)
     updateCamera(
         ml, h, validPts, validGuide, geoHash, userLoc, fallbackCenter, head, cameraMode, is3dMode, lockAutoFit,
-        liveHeadingDeg, effectiveTopPx, bottomOcclusionPx, fitTopClearPx, fitBottomClearPx, fitSidePx, recenter, northLocked
+        liveHeadingDeg, effectiveTopPx, bottomOcclusionPx, fitTopClearPx, fitBottomClearPx, fitSidePx, recenter, playing, northLocked
     )
 
     val preloadKey = "${geoHash}_$styleUri"
@@ -970,6 +978,7 @@ private fun updateCamera(
     fitBottomClearPx: Int,
     fitSidePx: Int,
     recenter: Int,
+    playing: Boolean,
     northLocked: Boolean
 ) {
     val mvW = h.mapView?.width ?: 0
@@ -984,6 +993,8 @@ private fun updateCamera(
     when (mode) {
         MapCameraMode.FIT_ROUTE -> {
             h.lastFollowKey = ""
+            h.camBlendActive = false
+            h.smoothCamLat = null
             if (routePts.isNotEmpty()) {
                 applyFitRouteCamera(
                     ml, h, routePts, geoHash, head, is3d, lockAutoFit,
@@ -1000,7 +1011,7 @@ private fun updateCamera(
         MapCameraMode.FOLLOW_RUNNER -> applyFollowRunnerCamera(
             ml, h, pts, guidePts, routePts, geoHash, userLoc, fallbackCenter, head,
             is3d, modeChanged, toggle3dChanged, liveHeading, mvW, mvH,
-            effectiveTopPx, bottomOcclusionPx, recenter, northLocked
+            effectiveTopPx, bottomOcclusionPx, recenter, playing, northLocked
         )
         MapCameraMode.FREE_PAN -> applyFreePanCamera(
             ml, h, guidePts, routePts, geoHash, userLoc, fallbackCenter,
@@ -1029,11 +1040,14 @@ private fun applyFitRouteCamera(
     fitSidePx: Int,
     recenter: Int
 ) {
+    val recenterChanged = recenter != h.lastRecenter
+    val nowUptime = android.os.SystemClock.uptimeMillis()
+    if (nowUptime < h.camAnimUntilMs && !modeChanged && !toggle3dChanged && !recenterChanged) return
     val rKey = if (head != null) h.lastRouteKey.ifEmpty { "${routePts.size}_$geoHash" } else "${routePts.size}_$geoHash"
     val fitKey = "${rKey}_${is3d}_${recenter}_${fitTopClearPx / 16}_${fitBottomClearPx / 16}_${mvW / 32}_${mvH / 32}"
     val keyDirty = fitKey != h.lastFitKey || modeChanged || toggle3dChanged
     if (!keyDirty) return
-    val allowed = !lockAutoFit || h.lastFitKey.isEmpty() || modeChanged || toggle3dChanged || recenter != h.lastRecenter
+    val allowed = !lockAutoFit || h.lastFitKey.isEmpty() || modeChanged || toggle3dChanged || recenterChanged
     if (!allowed) return
 
     val hadPriorFit = h.lastFitKey.isNotEmpty()
@@ -1046,7 +1060,9 @@ private fun applyFitRouteCamera(
         val pos = CameraPosition.Builder()
             .target(LatLng(routePts.first().latitude, routePts.first().longitude))
             .zoom(16.0).tilt(if (is3d) 45.0 else 0.0).bearing(0.0).padding(0.0, 0.0, 0.0, 0.0).build()
-        moveOrAnimate(ml, pos, !hadPriorFit, 340)
+        val immediate = !hadPriorFit
+        if (!immediate) h.camAnimUntilMs = nowUptime + 360L
+        moveOrAnimate(ml, pos, immediate, 340)
         return
     }
 
@@ -1067,6 +1083,7 @@ private fun applyFitRouteCamera(
             .padding(sSide.toDouble(), sTop.toDouble(), sSide.toDouble(), sBot.toDouble()).build()
     }
     val immediate = !hadPriorFit && !modeChanged && !toggle3dChanged
+    if (!immediate) h.camAnimUntilMs = nowUptime + 440L
     moveOrAnimate(ml, finalPos, immediate, 420)
 }
 
@@ -1091,6 +1108,7 @@ private fun applyEmptyFitCamera(
     val pos = CameraPosition.Builder().target(LatLng(tgt.latitude, tgt.longitude)).zoom(15.8)
         .tilt(if (is3d) 45.0 else 0.0).bearing(0.0)
         .padding(0.0, effectiveTopPx.toDouble(), 0.0, bottomOcclusionPx.toDouble()).build()
+    if (hadPrior) h.camAnimUntilMs = android.os.SystemClock.uptimeMillis() + 360L
     moveOrAnimate(ml, pos, !hadPrior, 340)
 }
 
@@ -1113,6 +1131,7 @@ private fun applyFollowRunnerCamera(
     effectiveTopPx: Int,
     bottomOcclusionPx: Int,
     recenter: Int,
+    playing: Boolean,
     northLocked: Boolean
 ) {
     h.lastFitKey = ""
@@ -1122,28 +1141,130 @@ private fun applyFollowRunnerCamera(
         ?: pts.lastOrNull()?.let { LatLon(it.latitude, it.longitude) }
         ?: userLoc ?: guidePts.firstOrNull() ?: fallbackCenter
     val targetBrg = if (!northLocked) (head?.bearingDeg ?: liveHeading ?: 0f).toDouble() else 0.0
+    val recenterChanged = recenter != h.lastRecenter
+
+    if (playing) {
+        stepFollowPlayingCamera(
+            ml, h, tgt, targetBrg, is3d, modeChanged, toggle3dChanged, recenterChanged,
+            northToggled, northLocked, routePts.size, geoHash, effectiveTopPx, bottomOcclusionPx, recenter
+        )
+        return
+    }
+
+    h.camBlendActive = false
+    val nowUptime = android.os.SystemClock.uptimeMillis()
+    if (nowUptime < h.camAnimUntilMs && !modeChanged && !toggle3dChanged && !recenterChanged && !northToggled) return
+
     val followKey = "${"%.6f".format(tgt.latitude)}_${"%.6f".format(tgt.longitude)}_${is3d}_${recenter}_${northLocked}_${effectiveTopPx / 16}_${bottomOcclusionPx / 16}_${"%.0f".format(targetBrg)}_${mvW / 32}_${mvH / 32}"
     if (followKey == h.lastFollowKey && !modeChanged && !toggle3dChanged && !northToggled) return
 
     val hadPrior = h.lastFollowKey.isNotEmpty()
-    val recenterChanged = recenter != h.lastRecenter
     val animateTransition = modeChanged || toggle3dChanged || recenterChanged || northToggled || (hadPrior && head == null)
     h.lastFollowKey = followKey
     h.lastRouteKey = if (routePts.isEmpty()) "empty" else "${routePts.size}_$geoHash"
     h.lastRecenter = recenter
-    val brg = if (animateTransition || h.smoothFollowBearing == null) {
-        targetBrg
-    } else {
-        lerpAngleDeg(h.smoothFollowBearing!!, targetBrg, 0.22)
-    }
-    h.smoothFollowBearing = brg
+    val zoom = if (!hadPrior || modeChanged || recenterChanged || ml.cameraPosition.zoom < 15.6) 16.5 else ml.cameraPosition.zoom
+    val tilt = if (is3d) 54.0 else 0.0
+    h.smoothFollowBearing = targetBrg
+    h.smoothCamLat = tgt.latitude
+    h.smoothCamLon = tgt.longitude
+    h.smoothCamZoom = zoom
+    h.smoothCamTilt = tilt
     ml.setPadding(0, effectiveTopPx, 0, bottomOcclusionPx)
-    val curZoom = ml.cameraPosition.zoom
-    val zoom = if (!hadPrior || modeChanged || recenterChanged || curZoom < 15.6) 16.5 else curZoom
     val pos = CameraPosition.Builder().target(LatLng(tgt.latitude, tgt.longitude)).zoom(zoom)
-        .tilt(if (is3d) 54.0 else 0.0).bearing(brg)
+        .tilt(tilt).bearing(targetBrg)
         .padding(0.0, effectiveTopPx.toDouble(), 0.0, bottomOcclusionPx.toDouble()).build()
+    if (animateTransition) h.camAnimUntilMs = nowUptime + 440L
     moveOrAnimate(ml, pos, !animateTransition, 420)
+}
+
+private fun stepFollowPlayingCamera(
+    ml: MapLibreMap,
+    h: VectorMapHolder,
+    tgt: LatLon,
+    targetBrg: Double,
+    is3d: Boolean,
+    modeChanged: Boolean,
+    toggle3dChanged: Boolean,
+    recenterChanged: Boolean,
+    northToggled: Boolean,
+    northLocked: Boolean,
+    routeCount: Int,
+    geoHash: Int,
+    effectiveTopPx: Int,
+    bottomOcclusionPx: Int,
+    recenter: Int
+) {
+    val cur = ml.cameraPosition
+    if (modeChanged || toggle3dChanged || recenterChanged || northToggled || h.smoothCamLat == null) {
+        ml.cancelTransitions()
+        h.camAnimUntilMs = 0L
+        val curLatLng = cur.target
+        h.smoothCamLat = curLatLng?.latitude ?: tgt.latitude
+        h.smoothCamLon = curLatLng?.longitude ?: tgt.longitude
+        h.smoothCamZoom = cur.zoom
+        h.smoothCamTilt = cur.tilt
+        h.smoothFollowBearing = cur.bearing
+        h.lastCamStepNs = System.nanoTime()
+        if (modeChanged || toggle3dChanged || recenterChanged || h.lastFollowKey.isEmpty()) {
+            h.camBlendActive = true
+        }
+    }
+    val nowNs = System.nanoTime()
+    val dt = if (h.lastCamStepNs > 0L) ((nowNs - h.lastCamStepNs) / 1_000_000_000.0).coerceIn(0.004, 0.06) else 0.016
+    h.lastCamStepNs = nowNs
+
+    val desiredZoom = if (h.camBlendActive) 16.5 else cur.zoom.coerceAtLeast(16.2)
+    val desiredTilt = if (is3d) 54.0 else 0.0
+    updateFollowBlend(h, tgt, desiredZoom, desiredTilt, dt)
+    val brg = lerpAngleDeg(h.smoothFollowBearing ?: targetBrg, targetBrg, 1.0 - kotlin.math.exp(-dt * 7.5))
+    h.smoothFollowBearing = brg
+    h.lastFollowKey = "play_${"%.5f".format(tgt.latitude)}_${"%.5f".format(tgt.longitude)}_$northLocked"
+    h.lastRouteKey = if (routeCount == 0) "empty" else "${routeCount}_$geoHash"
+    h.lastRecenter = recenter
+    ml.setPadding(0, effectiveTopPx, 0, bottomOcclusionPx)
+    val pos = CameraPosition.Builder()
+        .target(LatLng(h.smoothCamLat ?: tgt.latitude, h.smoothCamLon ?: tgt.longitude))
+        .zoom(h.smoothCamZoom ?: desiredZoom)
+        .tilt(h.smoothCamTilt ?: desiredTilt)
+        .bearing(brg)
+        .padding(0.0, effectiveTopPx.toDouble(), 0.0, bottomOcclusionPx.toDouble())
+        .build()
+    ml.moveCamera(CameraUpdateFactory.newCameraPosition(pos))
+}
+
+private fun updateFollowBlend(
+    h: VectorMapHolder,
+    tgt: LatLon,
+    desiredZoom: Double,
+    desiredTilt: Double,
+    dt: Double
+) {
+    if (!h.camBlendActive) {
+        h.smoothCamLat = tgt.latitude
+        h.smoothCamLon = tgt.longitude
+        h.smoothCamZoom = desiredZoom
+        h.smoothCamTilt = desiredTilt
+        return
+    }
+    val posAlpha = 1.0 - kotlin.math.exp(-dt * 8.5)
+    val zpAlpha = 1.0 - kotlin.math.exp(-dt * 7.5)
+    val curLat = h.smoothCamLat ?: tgt.latitude
+    val curLon = h.smoothCamLon ?: tgt.longitude
+    val curZoom = h.smoothCamZoom ?: desiredZoom
+    val curTilt = h.smoothCamTilt ?: desiredTilt
+    val nLat = curLat + (tgt.latitude - curLat) * posAlpha
+    val nLon = curLon + (tgt.longitude - curLon) * posAlpha
+    val nZoom = curZoom + (desiredZoom - curZoom) * zpAlpha
+    val nTilt = curTilt + (desiredTilt - curTilt) * zpAlpha
+    h.smoothCamLat = nLat
+    h.smoothCamLon = nLon
+    h.smoothCamZoom = nZoom
+    h.smoothCamTilt = nTilt
+    val donePos = kotlin.math.hypot(tgt.longitude - nLon, tgt.latitude - nLat) < 1e-5
+    if (donePos && kotlin.math.abs(desiredZoom - nZoom) < 0.05 && kotlin.math.abs(desiredTilt - nTilt) < 0.5) {
+        h.camBlendActive = false
+    }
 }
 
 private fun lerpAngleDeg(cur: Double, target: Double, alpha: Double): Double {
@@ -1167,6 +1288,9 @@ private fun applyFreePanCamera(
 ) {
     h.lastFitKey = ""
     h.lastFollowKey = ""
+    h.camBlendActive = false
+    h.smoothCamLat = null
+    h.camAnimUntilMs = 0L
     val seedRealArrived = userLoc != null && !h.hasSeededRealUserLoc
     if (h.lastCamMode == null || (seedRealArrived && h.lastCamMode == MapCameraMode.FREE_PAN)) {
         if (userLoc != null) h.hasSeededRealUserLoc = true

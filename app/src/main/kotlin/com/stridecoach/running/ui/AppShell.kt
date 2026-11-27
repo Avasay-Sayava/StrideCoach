@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.health.connect.client.PermissionController
+import androidx.health.connect.client.contracts.ExerciseRouteRequestContract
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -294,13 +295,17 @@ private fun Tabs(
     }
 }
 
-private data class HcRef(val av: Boolean, val ok: Boolean, val ask: () -> Unit)
+private data class HcRef(val av: Boolean, val ok: Boolean, val pendingRoutes: Int, val ask: () -> Unit, val askRoute: () -> Unit)
 
 @Composable
 private fun hcHook(vm: StrideCoachViewModel, t: Int, resumeTick: Int): HcRef {
     val c = LocalContext.current
     var ok by remember { mutableStateOf(false) }
     val av = remember(c) { HcMgr.isAvailable(c) }
+    val pendingRoutes by vm.pendingHcRouteIds.collectAsState()
+    var activeSessionId by remember { mutableStateOf<String?>(null) }
+    var lastAutoPromptId by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(av, t, resumeTick) {
         if (av) ok = HcMgr.hasPermissions(c)
     }
@@ -310,7 +315,32 @@ private fun hcHook(vm: StrideCoachViewModel, t: Int, resumeTick: Int): HcRef {
         vm.updatePreferences { it.copy(healthConnectEnabled = g) }
         if (g) vm.syncHealthConnect(c)
     }
-    return HcRef(av, ok) { q.launch(HcMgr.requiredPermissions) }
+    val routeLauncher = rememberLauncherForActivityResult(ExerciseRouteRequestContract()) { route ->
+        val sid = activeSessionId
+        activeSessionId = null
+        if (sid != null) vm.applyConsentedHealthRoute(c, sid, route)
+    }
+    LaunchedEffect(pendingRoutes) {
+        val nextId = pendingRoutes.firstOrNull()
+        if (nextId != null && nextId != lastAutoPromptId && activeSessionId == null) {
+            lastAutoPromptId = nextId
+            activeSessionId = nextId
+            routeLauncher.launch(nextId)
+        }
+    }
+    return HcRef(
+        av = av,
+        ok = ok,
+        pendingRoutes = pendingRoutes.size,
+        ask = { q.launch(HcMgr.requiredPermissions) },
+        askRoute = {
+            val nextId = pendingRoutes.firstOrNull()
+            if (nextId != null) {
+                activeSessionId = nextId
+                routeLauncher.launch(nextId)
+            }
+        }
+    )
 }
 
 @Composable
@@ -473,7 +503,9 @@ private fun TabBody(
             battOk = battOk,
             hcAvail = hc.av,
             hcOk = hc.ok,
+            hcPendingRoutes = hc.pendingRoutes,
             onHcConnect = hc.ask,
+            onHcGrantRoutes = hc.askRoute,
             onHcSync = { vm.syncHealthConnect(c) },
             onHealthAutoSync = { on -> vm.setHealthAutoSync(c, on) },
             onAutoDetect = { on -> vm.setAutoDetectRuns(c, on) },

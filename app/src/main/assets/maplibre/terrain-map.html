@@ -71,7 +71,11 @@
     lastScreenHead: null,
     targetBearing: 0.0,
     smoothCamCenter: null,
+    smoothCamZoom: null,
+    smoothCamPitch: null,
     smoothCamBearing: 0.0,
+    camBlendActive: false,
+    lastBldThresh: -1,
     colorByPace: true,
     showHead: false,
     rafId: 0,
@@ -371,11 +375,12 @@
     };
   }
 
-  function createHead3dLayer() {
+  function createHead3dLayer(passMode) {
     var prog = null, vbo = null;
     var locExt, uClipCenter, uRad, uVp;
+    var isCore = passMode === 'core';
     return {
-      id: 'sc-head-3d',
+      id: isCore ? 'sc-head-core-3d' : 'sc-head-halo-3d',
       type: 'custom',
       renderingMode: '3d',
       onAdd: function(map, gl) {
@@ -391,20 +396,25 @@
           '  v_uv = a_ext;',
           '}'
         ].join('\n');
-        var fs = [
+        var fs = isCore ? [
           'precision mediump float;',
           'varying vec2 v_uv;',
           'void main() {',
           '  float d = length(v_uv);',
-          '  if (d > 1.0) discard;',
-          '  float haloA = 0.34 * (1.0 - smoothstep(0.88, 1.0, d));',
-          '  vec4 col = vec4(0.573 * haloA, 0.431 * haloA, 0.894 * haloA, haloA);',
-          '  float ringMask = 1.0 - smoothstep(0.54, 0.62, d);',
-          '  vec4 white = vec4(1.0, 1.0, 1.0, 1.0);',
-          '  col = mix(col, white, ringMask);',
+          '  if (d > 0.62) discard;',
           '  float coreMask = 1.0 - smoothstep(0.32, 0.40, d);',
+          '  vec4 white = vec4(1.0, 1.0, 1.0, 1.0);',
           '  vec4 core = vec4(0.573, 0.431, 0.894, 1.0);',
-          '  gl_FragColor = mix(col, core, coreMask);',
+          '  gl_FragColor = mix(white, core, coreMask);',
+          '}'
+        ].join('\n') : [
+          'precision mediump float;',
+          'varying vec2 v_uv;',
+          'void main() {',
+          '  float d = length(v_uv);',
+          '  if (d <= 0.56 || d > 1.0) discard;',
+          '  float haloA = 0.34 * (1.0 - smoothstep(0.88, 1.0, d));',
+          '  gl_FragColor = vec4(0.573 * haloA, 0.431 * haloA, 0.894 * haloA, haloA);',
           '}'
         ].join('\n');
         prog = compileProgram(gl, vs, fs);
@@ -446,17 +456,22 @@
 
         var vpW = gl.drawingBufferWidth || 1;
         var vpH = gl.drawingBufferHeight || 1;
-        if (state.playing && state.headTrace.length < 240) {
+        if (isCore && state.playing && state.headTrace.length < 240) {
           state.headTrace.push([((cx / cw) + 1.0) * 0.5 * vpW, (1.0 - (cy / cw)) * 0.5 * vpH]);
         }
 
         var z = map.getZoom ? map.getZoom() : 16.0;
-        var useDepth = z >= 15.6;
-        var radPx = z >= 16.0 ? 12.5 : (useDepth ? 10.5 + (z - 15.6) * 5.0 : 12.0);
-        if (useDepth) gl.enable(gl.DEPTH_TEST); else gl.disable(gl.DEPTH_TEST);
+        var radPx = z >= 16.0 ? 12.5 : (z >= 14.5 ? 10.5 + (z - 14.5) * 1.33 : 10.5);
+        if (isCore) {
+          // Core draws above terrain & short buildings, and writes its depth so tall buildings ahead occlude it cleanly.
+          gl.disable(gl.DEPTH_TEST);
+          gl.depthMask(true);
+        } else {
+          gl.enable(gl.DEPTH_TEST);
+          gl.depthMask(false);
+        }
 
         gl.useProgram(prog);
-        gl.depthMask(false);
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
@@ -469,10 +484,35 @@
         gl.uniform2f(uVp, vpW, vpH);
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
-        if (!useDepth) gl.enable(gl.DEPTH_TEST);
+        gl.enable(gl.DEPTH_TEST);
         gl.depthMask(true);
       }
     };
+  }
+
+  function buildingHeightExpr() {
+    return ['coalesce', ['get', 'render_height'], ['get', 'height'], 12];
+  }
+
+  function computeBuildingOccThreshold(map) {
+    if (!map || !map.getZoom) return 18;
+    var z = map.getZoom();
+    var pitchRad = Math.max(0.25, Math.sin((map.getPitch() || 48) * Math.PI / 180.0));
+    var latRad = ((map.getCenter() ? map.getCenter().lat : 32.0) * Math.PI) / 180.0;
+    var metersPerPx = (40075016.686 * Math.cos(latRad)) / (512.0 * Math.pow(2.0, z));
+    var rawH = (48.0 * metersPerPx) / pitchRad;
+    var clamped = Math.max(10, Math.min(140, rawH));
+    return Math.round(clamped / 4) * 4;
+  }
+
+  function updateBuildingOcclusionSplit(map) {
+    if (!map || !state.styleReady) return;
+    var thresh = computeBuildingOccThreshold(map);
+    if (thresh === state.lastBldThresh) return;
+    state.lastBldThresh = thresh;
+    var hExpr = buildingHeightExpr();
+    if (map.getLayer('3d-buildings-low')) map.setFilter('3d-buildings-low', ['<', hExpr, thresh]);
+    if (map.getLayer('3d-buildings-tall')) map.setFilter('3d-buildings-tall', ['>=', hExpr, thresh]);
   }
 
   function reorganizeLayersForSinglePassTerrain(map) {
@@ -483,7 +523,7 @@
     for (var i = 0; i < layers.length; i++) {
       var id = layers[i].id;
       if (layers[i].type === 'symbol') syms.push(id);
-      else if (layers[i].type === 'fill-extrusion' && id !== '3d-buildings-layer') {
+      else if (layers[i].type === 'fill-extrusion' && id !== '3d-buildings-low' && id !== '3d-buildings-tall') {
         map.setLayoutProperty(id, 'visibility', 'none');
       }
     }
@@ -536,27 +576,54 @@
       if (firstSym) map.addLayer(state.routeLayer, firstSym); else map.addLayer(state.routeLayer);
     }
 
-    if (map.getSource('openmaptiles') && !map.getLayer('3d-buildings-layer')) {
-      var bldDef = {
-        id: '3d-buildings-layer',
+    var thresh = computeBuildingOccThreshold(map);
+    state.lastBldThresh = thresh;
+    var hExpr = buildingHeightExpr();
+    if (map.getSource('openmaptiles') && !map.getLayer('3d-buildings-low')) {
+      var lowDef = {
+        id: '3d-buildings-low',
         type: 'fill-extrusion',
         source: 'openmaptiles',
         'source-layer': 'building',
         minzoom: 13.8,
+        filter: ['<', hExpr, thresh],
         paint: {
-          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], 12],
+          'fill-extrusion-height': hExpr,
           'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0],
           'fill-extrusion-color': '#3A4354',
           'fill-extrusion-opacity': 1.0
         }
       };
-      if (firstSym) map.addLayer(bldDef, firstSym); else map.addLayer(bldDef);
+      if (firstSym) map.addLayer(lowDef, firstSym); else map.addLayer(lowDef);
+    }
+
+    state.headLayer = createHead3dLayer('core');
+    if (!map.getLayer('sc-head-core-3d')) {
+      if (firstSym) map.addLayer(state.headLayer, firstSym); else map.addLayer(state.headLayer);
+    }
+
+    if (map.getSource('openmaptiles') && !map.getLayer('3d-buildings-tall')) {
+      var tallDef = {
+        id: '3d-buildings-tall',
+        type: 'fill-extrusion',
+        source: 'openmaptiles',
+        'source-layer': 'building',
+        minzoom: 13.8,
+        filter: ['>=', hExpr, thresh],
+        paint: {
+          'fill-extrusion-height': hExpr,
+          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0],
+          'fill-extrusion-color': '#3A4354',
+          'fill-extrusion-opacity': 1.0
+        }
+      };
+      if (firstSym) map.addLayer(tallDef, firstSym); else map.addLayer(tallDef);
     }
 
     installMarkerLayers(map);
-    state.headLayer = createHead3dLayer();
-    if (!map.getLayer('sc-head-3d')) {
-      map.addLayer(state.headLayer);
+    var haloLayer = createHead3dLayer('halo');
+    if (!map.getLayer('sc-head-halo-3d')) {
+      map.addLayer(haloLayer);
     }
   }
 
@@ -698,9 +765,10 @@
       map.setLayoutProperty('terrain-hillshade-layer', 'visibility', hillVis);
     }
     var bldVis = p.showBuildings ? 'visible' : 'none';
-    if (bldVis !== state.lastBuildingsVis && map.getLayer('3d-buildings-layer')) {
+    if (bldVis !== state.lastBuildingsVis) {
       state.lastBuildingsVis = bldVis;
-      map.setLayoutProperty('3d-buildings-layer', 'visibility', bldVis);
+      if (map.getLayer('3d-buildings-low')) map.setLayoutProperty('3d-buildings-low', 'visibility', bldVis);
+      if (map.getLayer('3d-buildings-tall')) map.setLayoutProperty('3d-buildings-tall', 'visibility', bldVis);
     }
     if (p.interactive !== state.lastInteractive) {
       state.lastInteractive = p.interactive;
@@ -828,13 +896,39 @@
     if (f && f.camMode === 'FOLLOW_RUNNER' && state.smoothHead && el && el.clientWidth > 0 && Date.now() >= state.easeUntilMs) {
       var topPad = Math.min(Math.max(0, Math.round(f.topCss)), Math.round(el.clientHeight * 0.42));
       var botPad = Math.min(Math.max(0, Math.round(f.botCss)), Math.round(el.clientHeight * 0.44));
-      state.smoothCamCenter = [state.smoothHead[0], state.smoothHead[1]];
+      var desiredZoom = state.camBlendActive ? 16.4 : Math.max(map.getZoom(), 16.4);
+      var desiredPitch = 56.0;
       var tgtBrg = f.northLocked ? 0.0 : (state.routePoly ? lookAheadRouteBearing(state.smoothFrac, state.targetBearing) : state.targetBearing);
-      state.smoothCamBearing = lerpAngle(state.smoothCamBearing, tgtBrg, 1.0 - Math.exp(-dt * 6.0));
+      if (state.camBlendActive) {
+        if (!state.smoothCamCenter) {
+          var mc = map.getCenter();
+          state.smoothCamCenter = [mc.lng, mc.lat];
+        }
+        if (state.smoothCamZoom === null) state.smoothCamZoom = map.getZoom();
+        if (state.smoothCamPitch === null) state.smoothCamPitch = map.getPitch();
+        var posAlpha = 1.0 - Math.exp(-dt * 8.5);
+        var zpAlpha = 1.0 - Math.exp(-dt * 7.5);
+        state.smoothCamCenter[0] += (state.smoothHead[0] - state.smoothCamCenter[0]) * posAlpha;
+        state.smoothCamCenter[1] += (state.smoothHead[1] - state.smoothCamCenter[1]) * posAlpha;
+        state.smoothCamZoom += (desiredZoom - state.smoothCamZoom) * zpAlpha;
+        state.smoothCamPitch += (desiredPitch - state.smoothCamPitch) * zpAlpha;
+        if (
+          Math.hypot(state.smoothHead[0] - state.smoothCamCenter[0], state.smoothHead[1] - state.smoothCamCenter[1]) < 1e-5 &&
+          Math.abs(desiredZoom - state.smoothCamZoom) < 0.05 &&
+          Math.abs(desiredPitch - state.smoothCamPitch) < 0.5
+        ) {
+          state.camBlendActive = false;
+        }
+      } else {
+        state.smoothCamCenter = [state.smoothHead[0], state.smoothHead[1]];
+        state.smoothCamZoom = desiredZoom;
+        state.smoothCamPitch = desiredPitch;
+      }
+      state.smoothCamBearing = lerpAngle(state.smoothCamBearing, tgtBrg, 1.0 - Math.exp(-dt * 7.5));
       map.jumpTo({
         center: state.smoothCamCenter,
-        zoom: Math.max(map.getZoom(), 16.4),
-        pitch: 56,
+        zoom: state.smoothCamZoom,
+        pitch: state.smoothCamPitch,
         bearing: state.smoothCamBearing,
         padding: { top: topPad, bottom: botPad, left: 0, right: 0 }
       });
@@ -922,7 +1016,20 @@
       var tgt = f.head || s.routeEnd || f.userLoc || s.routeStart || s.fallback;
       var desiredBrg = f.northLocked ? 0 : (f.liveHeading || 0);
       state.targetBearing = desiredBrg;
-      if (state.playing && !modeChanged && !recenterChanged && !northToggled && state.lastFollowKey !== '') {
+      if (state.playing) {
+        if (modeChanged || recenterChanged || northToggled || state.lastFollowKey === '' || !state.smoothCamCenter) {
+          map.stop();
+          var mcNow = map.getCenter ? map.getCenter() : null;
+          state.smoothCamCenter = mcNow ? [mcNow.lng, mcNow.lat] : [tgt[0], tgt[1]];
+          state.smoothCamZoom = map.getZoom ? map.getZoom() : 16.4;
+          state.smoothCamPitch = map.getPitch ? map.getPitch() : 56;
+          state.smoothCamBearing = map.getBearing ? map.getBearing() : desiredBrg;
+          state.easeUntilMs = 0;
+          state.camBlendActive = modeChanged || recenterChanged || state.lastFollowKey === '';
+          state.lastFollowKey = tgt[0].toFixed(6) + '_' + tgt[1].toFixed(6) + '_' + f.recenter + '_' + !!f.northLocked;
+          state.hasCameraInit = true;
+          state.lastFreeInit = true;
+        }
         state.lastCamMode = f.camMode;
         return;
       }
@@ -933,9 +1040,13 @@
         state.lastFollowKey = flwKey;
         state.hasCameraInit = true;
         state.lastFreeInit = true;
+        state.camBlendActive = false;
+        var tgtZoom = (first || modeChanged || recenterChanged || map.getZoom() < 15.6) ? 16.4 : map.getZoom();
         state.smoothCamCenter = [tgt[0], tgt[1]];
+        state.smoothCamZoom = tgtZoom;
+        state.smoothCamPitch = 56;
         state.smoothCamBearing = desiredBrg;
-        var opts = { center: tgt, zoom: (first || modeChanged || recenterChanged || map.getZoom() < 15.6) ? 16.4 : map.getZoom(), pitch: 56, bearing: desiredBrg, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } };
+        var opts = { center: tgt, zoom: tgtZoom, pitch: 56, bearing: desiredBrg, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } };
         if (animateFollow) {
           state.easeUntilMs = Date.now() + 480;
           opts.duration = 460;
@@ -947,6 +1058,8 @@
     } else {
       state.lastFitKey = '';
       state.lastFollowKey = '';
+      state.camBlendActive = false;
+      state.smoothCamCenter = null;
       if (!state.hasCameraInit) {
         state.hasCameraInit = true;
         state.lastFreeInit = true;
@@ -1037,6 +1150,8 @@
         }
       });
       map.on('click', function(e) { if (e && e.lngLat) StrideBridge.onMapTap(e.lngLat.lat, e.lngLat.lng); });
+      map.on('zoom', function() { updateBuildingOcclusionSplit(map); });
+      map.on('pitch', function() { updateBuildingOcclusionSplit(map); });
       map.on('resize', function() { if (state.lastStatic && state.lastFrame) syncCamera(map, state.lastStatic, state.lastFrame); });
       map.on('render', function() { window.__scPerf.frames++; });
       map.on('style.load', function() {
@@ -1044,6 +1159,7 @@
         resetCachedKeys();
         var cur = state.lastStatic || s;
         ensureTerrainAndLayers(map, cur);
+        updateBuildingOcclusionSplit(map);
         syncStaticState(map, cur);
         if (state.lastFrame) syncFrameState(map, state.lastFrame);
       });
@@ -1059,6 +1175,7 @@
     state.lastGuideKey = ''; state.lastBaseKey = ''; state.lastWpsKey = '';
     state.lastTrimKey = ''; state.lastHiDataKey = ''; state.lastHeadKey = '';
     state.lastUserDotKey = ''; state.lastBuildingsVis = ''; state.lastHillVis = '';
+    state.lastBldThresh = -1;
     state.routeVboDirty = true;
   }
 

@@ -260,7 +260,9 @@ fun RunDetailMapScreen(
                 onClearHighlight = { hiRange = null },
                 onTogglePlay = {
                     if (prog >= 0.99f) prog = 0f
-                    playing = !playing
+                    val nextPlay = !playing
+                    playing = nextPlay
+                    if (nextPlay) hiRange = null
                 },
                 onSpeedSlider = { speedSlider = it },
                 onCycleSpeed = {
@@ -275,6 +277,7 @@ fun RunDetailMapScreen(
                     if (hiRange == rng) {
                         hiRange = null
                     } else {
+                        playing = false
                         hiRange = rng
                         hiTrigger++
                         camMode = MapCameraMode.FREE_PAN

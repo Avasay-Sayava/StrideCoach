@@ -157,26 +157,31 @@ class RunTailTrimmer {
         )
     }
 
-    private fun rebuildSplits(pts: List<TrackPoint>): List<RunSplit> {
-        val out = mutableListOf<RunSplit>()
-        var num = 1
-        var sDist = 0.0
-        var sTime = pts.first().elapsedMillis
+    private fun rebuildSplits(pts: List<TrackPoint>): List<RunSplit> = buildKmSplits(pts)
 
-        for (pt in pts) {
-            val d = pt.cumulativeDistanceMeters - sDist
-            if (d >= 1_000.0) {
-                val dur = (pt.elapsedMillis - sTime).coerceAtLeast(1L)
-                out.add(RunSplit(num++, d.roundToInt(), dur))
-                sDist = pt.cumulativeDistanceMeters
-                sTime = pt.elapsedMillis
+    companion object {
+        fun buildKmSplits(pts: List<TrackPoint>): List<RunSplit> {
+            if (pts.size < 2) return emptyList()
+            val out = mutableListOf<RunSplit>()
+            var num = 1
+            var sDist = 0.0
+            var sTime = pts.first().elapsedMillis
+
+            for (pt in pts) {
+                val d = pt.cumulativeDistanceMeters - sDist
+                if (d >= 1_000.0) {
+                    val dur = (pt.elapsedMillis - sTime).coerceAtLeast(1L)
+                    out.add(RunSplit(num++, d.roundToInt(), dur))
+                    sDist = pt.cumulativeDistanceMeters
+                    sTime = pt.elapsedMillis
+                }
             }
+            val rem = (pts.last().cumulativeDistanceMeters - sDist).roundToInt()
+            if (rem >= 50) {
+                val dur = (pts.last().elapsedMillis - sTime).coerceAtLeast(1L)
+                out.add(RunSplit(num, rem, dur))
+            }
+            return out
         }
-        val rem = (pts.last().cumulativeDistanceMeters - sDist).roundToInt()
-        if (rem >= 50) {
-            val dur = (pts.last().elapsedMillis - sTime).coerceAtLeast(1L)
-            out.add(RunSplit(num, rem, dur))
-        }
-        return out
     }
 }

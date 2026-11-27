@@ -70,18 +70,42 @@ class StrideCoachRepository(
         var up = 0
         for (rec in incoming) {
             val match = existing.firstOrNull { abs(it.run.startTimestampMillis - rec.startTimestampMillis) <= 300_000L }
-            if (match == null) fresh.add(rec) else if (tryUpgradeTimeline(match, rec)) up++
+            if (match == null) fresh.add(rec) else if (tryUpgradeExistingRun(match, rec)) up++
         }
         if (fresh.isNotEmpty()) saveRuns(fresh)
         return fresh.size + up
     }
 
-    private suspend fun tryUpgradeTimeline(m: RunWithSplits, rec: RunRecord): Boolean {
-        if (m.run.source != RunSource.TIMELINE_IMPORT.name || rec.trackPoints.size <= 2) return false
+    private suspend fun tryUpgradeExistingRun(m: RunWithSplits, rec: RunRecord): Boolean {
+        val upgradeableSource = m.run.source == RunSource.TIMELINE_IMPORT.name ||
+            m.run.source == RunSource.HEALTH_CONNECT.name
+        if (!upgradeableSource) return false
         val pts = db.runDao().getTrackPoints(m.run.id)
-        if (pts.size > 2) return false
+        val canUpgradeRoute = pts.size <= 2 && rec.trackPoints.size > 2
+        val canUpgradeDist = m.run.source == RunSource.HEALTH_CONNECT.name &&
+            m.run.distanceMeters == 0 && rec.distanceMeters > 0
+        if (!canUpgradeRoute && !canUpgradeDist) return false
         val base = m.run.toDomain(m.splits.map { it.toDomain() }, pts.map { it.toDomain() })
-        saveRun(base.copy(encodedPolyline = rec.encodedPolyline, rawEncodedPolyline = rec.rawEncodedPolyline, trackPoints = rec.trackPoints))
+        val upgraded = if (canUpgradeRoute) {
+            base.copy(
+                distanceMeters = if (rec.distanceMeters > 0) rec.distanceMeters else base.distanceMeters,
+                paceSecondsPerKm = if (rec.paceSecondsPerKm > 0) rec.paceSecondsPerKm else base.paceSecondsPerKm,
+                caloriesBurned = if (rec.caloriesBurned > 0) rec.caloriesBurned else base.caloriesBurned,
+                encodedPolyline = rec.encodedPolyline,
+                rawEncodedPolyline = rec.rawEncodedPolyline,
+                splits = rec.splits.ifEmpty { base.splits },
+                trackPoints = rec.trackPoints,
+                elevGainM = if (rec.elevGainM > 0) rec.elevGainM else base.elevGainM,
+                segs = rec.segs.ifEmpty { base.segs }
+            )
+        } else {
+            base.copy(
+                distanceMeters = rec.distanceMeters,
+                paceSecondsPerKm = rec.paceSecondsPerKm,
+                caloriesBurned = rec.caloriesBurned
+            )
+        }
+        saveRun(upgraded)
         return true
     }
 

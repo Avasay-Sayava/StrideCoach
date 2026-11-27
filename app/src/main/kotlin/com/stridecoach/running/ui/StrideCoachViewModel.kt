@@ -15,6 +15,7 @@ import com.stridecoach.running.core.data.adapter.TimelineJsonImporter
 import com.stridecoach.running.core.data.adapter.VaultAndTimelineSyncManager
 import com.stridecoach.running.core.data.health.HealthConnectSyncManager
 import com.stridecoach.running.core.data.health.HealthConnectSyncWorker
+import androidx.health.connect.client.records.ExerciseRoute
 import com.stridecoach.running.core.data.repository.AppPreferencesStore
 import com.stridecoach.running.core.data.repository.CoachPreferences
 import com.stridecoach.running.core.data.repository.StrideCoachRepository
@@ -140,6 +141,8 @@ class StrideCoachViewModel(
     val isFetchingTopo: StateFlow<Boolean> = topoBusyFlow.asStateFlow()
     private val guideFlow = MutableStateFlow<List<LatLon>>(emptyList())
     val plannedGuideRoute: StateFlow<List<LatLon>> = guideFlow.asStateFlow()
+    private val pendingHcRouteIdsFlow = MutableStateFlow<List<String>>(emptyList())
+    val pendingHcRouteIds: StateFlow<List<String>> = pendingHcRouteIdsFlow.asStateFlow()
     val liveTracking: StateFlow<LiveTrackingState> = TrackingSessionBus.state
 
     private val daysFlow = repo.observeActivePlan().flatMapLatest { plan ->
@@ -569,9 +572,37 @@ class StrideCoachViewModel(
             val res = withContext(Dispatchers.IO) {
                 HealthConnectSyncManager.syncRecentDays(ctx, repo, days = 30L)
             }
+            pendingHcRouteIdsFlow.value = res.pendingRouteSessionIds
             prefs.update { it.copy(lastHealthSyncMillis = System.currentTimeMillis()) }
             maybeWriteVault(ctx)
-            "Synced ${res.syncedWalkDays} walk days • ${res.addedRuns} new activities from Health Connect."
+            val routeMsg = if (res.routesLoaded > 0) " • ${res.routesLoaded} GPS routes" else ""
+            val consentMsg = if (res.pendingRouteSessionIds.isNotEmpty()) " • Route access needed" else ""
+            "Synced ${res.syncedWalkDays} walk days • ${res.addedRuns} updates$routeMsg$consentMsg"
+        }
+    }
+
+    fun applyConsentedHealthRoute(ctx: Context, sessionId: String, route: ExerciseRoute?) {
+        val remaining = pendingHcRouteIdsFlow.value.filterNot { it == sessionId }
+        if (route == null) {
+            pendingHcRouteIdsFlow.value = emptyList()
+            postBanner("Route permission skipped. Tap 'Grant GPS Routes' anytime to retry.")
+            return
+        }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                HealthConnectSyncManager.applyConsentedRoute(ctx, repo, sessionId, route)
+            }
+            if (ok) maybeWriteVault(ctx)
+            if (remaining.isNotEmpty()) {
+                val res = withContext(Dispatchers.IO) {
+                    HealthConnectSyncManager.syncRecentDays(ctx, repo, days = 30L)
+                }
+                pendingHcRouteIdsFlow.value = res.pendingRouteSessionIds.filterNot { it == sessionId }
+                if (res.routesLoaded > 0) postBanner("Loaded ${res.routesLoaded} GPS routes from Health Connect.")
+            } else {
+                pendingHcRouteIdsFlow.value = emptyList()
+                if (ok) postBanner("Loaded GPS route from Health Connect.")
+            }
         }
     }
 

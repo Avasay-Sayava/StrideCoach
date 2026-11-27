@@ -147,7 +147,9 @@ fun DataSettingsScreen(
     battOk: Boolean,
     hcAvail: Boolean,
     hcOk: Boolean,
+    hcPendingRoutes: Int = 0,
     onHcConnect: () -> Unit,
+    onHcGrantRoutes: () -> Unit = {},
     onHcSync: () -> Unit,
     onHealthAutoSync: (Boolean) -> Unit,
     onAutoDetect: (Boolean) -> Unit,
@@ -254,7 +256,9 @@ private fun SettingsMainBody(
     battOk: Boolean,
     hcAvail: Boolean,
     hcOk: Boolean,
+    hcPendingRoutes: Int = 0,
     onHcConnect: () -> Unit,
+    onHcGrantRoutes: () -> Unit = {},
     onHcSync: () -> Unit,
     onHealthAutoSync: (Boolean) -> Unit,
     onAutoDetect: (Boolean) -> Unit,
@@ -275,7 +279,8 @@ private fun SettingsMainBody(
         SearchResultsBody(
             query = trimmed, prefs = prefs, busy = busy, summary = summary,
             activityCounts = activityCounts, trashCount = trashCount, battOk = battOk,
-            hcAvail = hcAvail, hcOk = hcOk, onHcConnect = onHcConnect, onHcSync = onHcSync,
+            hcAvail = hcAvail, hcOk = hcOk, hcPendingRoutes = hcPendingRoutes,
+            onHcConnect = onHcConnect, onHcGrantRoutes = onHcGrantRoutes, onHcSync = onHcSync,
             onHealthAutoSync = onHealthAutoSync, onAutoDetect = onAutoDetect, onAutoStart = onAutoStart,
             onPickSyncFolder = onPickSyncFolder, onSyncFolderNow = onSyncFolderNow,
             onRestoreVaultFile = onRestoreVaultFile, onOpenTrash = onOpenTrash, onUpdate = onUpdate,
@@ -288,8 +293,8 @@ private fun SettingsMainBody(
         return
     }
     SettingsSubPageContent(
-        activePage, prefs, busy, summary, activityCounts, trashCount, battOk, hcAvail, hcOk,
-        onHcConnect, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart,
+        activePage, prefs, busy, summary, activityCounts, trashCount, battOk, hcAvail, hcOk, hcPendingRoutes,
+        onHcConnect, onHcGrantRoutes, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart,
         onPickSyncFolder, onSyncFolderNow, onRestoreVaultFile, onOpenTrash, onUpdate,
         onImpBak, onExpBak, onImpTl, onBattReq
     )
@@ -306,7 +311,9 @@ private fun SettingsSubPageContent(
     battOk: Boolean,
     hcAvail: Boolean,
     hcOk: Boolean,
+    hcPendingRoutes: Int = 0,
     onHcConnect: () -> Unit,
+    onHcGrantRoutes: () -> Unit = {},
     onHcSync: () -> Unit,
     onHealthAutoSync: (Boolean) -> Unit,
     onAutoDetect: (Boolean) -> Unit,
@@ -336,7 +343,7 @@ private fun SettingsSubPageContent(
         }
         SettingsPage.LOCK_DETECT -> {
             LockscreenProtectionCard(prefs, onUpdate)
-            AutoCard(prefs, hcAvail, hcOk, busy, onHcConnect, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart)
+            AutoCard(prefs, hcAvail, hcOk, hcPendingRoutes, busy, onHcConnect, onHcGrantRoutes, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart)
             BattCard(battOk, onBattReq)
             GuideCard()
         }
@@ -405,7 +412,9 @@ private fun SearchResultsBody(
     battOk: Boolean,
     hcAvail: Boolean,
     hcOk: Boolean,
+    hcPendingRoutes: Int = 0,
     onHcConnect: () -> Unit,
+    onHcGrantRoutes: () -> Unit = {},
     onHcSync: () -> Unit,
     onHealthAutoSync: (Boolean) -> Unit,
     onAutoDetect: (Boolean) -> Unit,
@@ -499,7 +508,7 @@ private fun SearchResultsBody(
             onUpdate { it.copy(keepScreenAwake = v) }
         },
         SearchResultEntry.BlockEntry(SettingsPage.LOCK_DETECT, "Health Connect, Auto-Detect & Battery Guard", "health connect sync auto detect run walk ride samsung battery unrestricted lockscreen widget", {
-            AutoCard(prefs, hcAvail, hcOk, busy, onHcConnect, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart)
+            AutoCard(prefs, hcAvail, hcOk, hcPendingRoutes, busy, onHcConnect, onHcGrantRoutes, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart)
             BattCard(battOk, onBattReq)
             GuideCard()
         }),
@@ -722,8 +731,10 @@ private fun AutoCard(
     p: CoachPreferences,
     hcAvail: Boolean,
     hcOk: Boolean,
+    hcPendingRoutes: Int,
     busy: Boolean,
     onCon: () -> Unit,
+    onGrantRoutes: () -> Unit,
     onSync: () -> Unit,
     onAutoSync: (Boolean) -> Unit,
     onAutoDetect: (Boolean) -> Unit,
@@ -751,6 +762,10 @@ private fun AutoCard(
             if (!hcOk && hcAvail) {
                 Button(onClick = onCon, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
                     Text("Connect Health", maxLines = 1, softWrap = false)
+                }
+            } else if (hcPendingRoutes > 0) {
+                Button(onClick = onGrantRoutes, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text("Grant GPS Routes ($hcPendingRoutes)", maxLines = 1, softWrap = false)
                 }
             }
             OutlinedButton(onClick = onSync, enabled = hcAvail && !busy, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
