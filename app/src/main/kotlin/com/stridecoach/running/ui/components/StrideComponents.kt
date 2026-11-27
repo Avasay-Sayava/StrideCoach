@@ -431,7 +431,7 @@ fun RenameExerciseDialog(
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
-                label = { Text("Exercise name") },
+                label = { Text("Exercise name", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )

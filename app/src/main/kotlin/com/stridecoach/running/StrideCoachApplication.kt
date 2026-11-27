@@ -7,6 +7,7 @@ import com.stridecoach.running.core.data.health.HealthConnectSyncWorker
 import com.stridecoach.running.core.data.repository.AppPreferencesStore
 import com.stridecoach.running.core.data.repository.StrideCoachRepository
 import com.stridecoach.running.core.tracking.TrackingSessionBus
+import com.stridecoach.running.ui.components.MapLibreAssetCache
 import com.stridecoach.running.widget.LiveWorkoutWidgetProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +31,7 @@ class StrideCoachApplication : Application() {
         repository = StrideCoachRepository(db)
         preferencesStore = AppPreferencesStore(this)
         appScope.launch {
-            runCatching { repository.getAllRunsWithSplits() }
+            MapLibreAssetCache.warmUp(this@StrideCoachApplication)
             val prefs = preferencesStore.preferences.first()
             TrackingSessionBus.slopeAdjustedPaceEnabled = prefs.slopeAdjustedPaceEnabled
             TrackingSessionBus.widgetTapGuardEnabled = prefs.widgetTapGuardEnabled

@@ -268,7 +268,7 @@ private fun PlanCreatorCard(onActivate: (TrainingPlanConfig) -> Unit) {
 
     StrideCard {
         Text("Reusable Training Plan Builder", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        OutlinedTextField(name, { name = it }, label = { Text("Plan Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(name, { name = it }, label = { Text("Plan Name", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         GoalChipsRow(goal) { goal = it }
         TwoFieldRow("Weeks", weeks, { weeks = it }, "Goal sec/km", pace) { pace = it }
         ThreeFieldRow("Start km", startKm, { startKm = it }, "Peak km", peakKm, { peakKm = it }, "Walk km", walkCap) { walkCap = it }
@@ -330,7 +330,7 @@ private fun BenchmarkCard(onRecalibrate: (Long) -> Unit) {
     StrideCard {
         Text("5K Benchmark Auto-Recalibration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(mins, { mins = it }, label = { Text("5K time (min)") }, modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(mins, { mins = it }, label = { Text("5K time (min)", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.weight(1f), singleLine = true)
             Button(shape = RoundedCornerShape(999.dp), onClick = {
                 val v = mins.toDoubleOrNull() ?: return@Button
                 if (v > 12.0) onRecalibrate((v * 60_000.0).toLong())
@@ -354,7 +354,7 @@ private fun WorkoutBuilderCard(
 
     StrideCard {
         Text("Custom Structured Workout Builder", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        OutlinedTextField(title, { title = it }, label = { Text("Workout Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(title, { title = it }, label = { Text("Workout Name", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         ThreeFieldRow("Reps", reps, { reps = it }, "Work (m)", workM, { workM = it }, "Rest (s)", restS) { restS = it }
         Button(shape = RoundedCornerShape(999.dp), onClick = {
             onSave(buildIntervalTemplate(title, reps, workM, restS, paceSec))
@@ -381,17 +381,17 @@ private fun TemplateRow(tpl: StructuredWorkout, onTrash: (String) -> Unit, onRun
 @Composable
 private fun TwoFieldRow(l1: String, v1: String, c1: (String) -> Unit, l2: String, v2: String, c2: (String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(v1, c1, label = { Text(l1) }, modifier = Modifier.weight(1f), singleLine = true)
-        OutlinedTextField(v2, c2, label = { Text(l2) }, modifier = Modifier.weight(1f), singleLine = true)
+        OutlinedTextField(v1, c1, label = { Text(l1, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.weight(1f), singleLine = true)
+        OutlinedTextField(v2, c2, label = { Text(l2, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.weight(1f), singleLine = true)
     }
 }
 
 @Composable
 private fun ThreeFieldRow(l1: String, v1: String, c1: (String) -> Unit, l2: String, v2: String, c2: (String) -> Unit, l3: String, v3: String, c3: (String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(v1, c1, label = { Text(l1) }, modifier = Modifier.weight(1f), singleLine = true)
-        OutlinedTextField(v2, c2, label = { Text(l2) }, modifier = Modifier.weight(1f), singleLine = true)
-        OutlinedTextField(v3, c3, label = { Text(l3) }, modifier = Modifier.weight(1f), singleLine = true)
+        OutlinedTextField(v1, c1, label = { Text(l1, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.weight(1f), singleLine = true)
+        OutlinedTextField(v2, c2, label = { Text(l2, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.weight(1f), singleLine = true)
+        OutlinedTextField(v3, c3, label = { Text(l3, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.weight(1f), singleLine = true)
     }
 }
 

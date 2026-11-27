@@ -432,7 +432,7 @@ private fun AdvancedFiltersCard(
         OutlinedTextField(
             value = filters.query,
             onValueChange = { onUpdate(filters.copy(query = it)) },
-            label = { Text("Search name or description") },
+            label = { Text("Search runs…", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )

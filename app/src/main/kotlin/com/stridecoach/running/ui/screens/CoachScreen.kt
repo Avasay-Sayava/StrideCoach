@@ -197,7 +197,7 @@ private fun QuickWalkCard(onLog: (Int) -> Unit) {
     StrideCard {
         Text("Quick Daily Walk Log", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(value = input, onValueChange = { input = it }, label = { Text("Walk km today") }, modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(value = input, onValueChange = { input = it }, label = { Text("Walk km today", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }, modifier = Modifier.weight(1f), singleLine = true)
             Button(shape = RoundedCornerShape(999.dp), onClick = {
                 val km = input.toDoubleOrNull() ?: return@Button
                 onLog((km * 1000.0).toInt())

@@ -14,6 +14,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.stridecoach.running.core.data.repository.CoachPreferences
 import com.stridecoach.running.ui.AppShell
 import com.stridecoach.running.ui.StrideCoachViewModel
 import com.stridecoach.running.ui.theme.KdeNavBg
@@ -35,10 +36,10 @@ class MainActivity : ComponentActivity() {
         handleIntentUri(intent)
 
         setContent {
-            val st by vmRef.uiState.collectAsState()
+            val prefs by app.preferencesStore.preferences.collectAsState(initial = CoachPreferences())
             StrideCoachTheme(
-                themeMode = st.preferences.themeMode,
-                accentName = st.preferences.accentName
+                themeMode = prefs.themeMode,
+                accentName = prefs.accentName
             ) {
                 val isLight = StrideThemeState.isLight
                 val navArgb = KdeNavBg.toArgb()

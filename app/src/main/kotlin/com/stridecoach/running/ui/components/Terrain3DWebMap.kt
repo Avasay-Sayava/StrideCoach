@@ -32,12 +32,30 @@ import com.stridecoach.running.ui.theme.StrideThemeState
 import org.json.JSONArray
 import org.json.JSONObject
 import org.maplibre.geojson.LineString
+import java.io.ByteArrayInputStream
+import java.util.concurrent.ConcurrentHashMap
+
+internal object MapLibreAssetCache {
+    private val cache = ConcurrentHashMap<String, ByteArray>()
+
+    fun warmUp(ctx: Context) {
+        getBytes(ctx, "maplibre/maplibre-gl.js")
+        getBytes(ctx, "maplibre/maplibre-gl.css")
+    }
+
+    fun getBytes(ctx: Context, assetPath: String): ByteArray? =
+        cache[assetPath] ?: runCatching {
+            ctx.assets.open(assetPath).use { it.readBytes() }
+        }.getOrNull()?.also { cache.putIfAbsent(assetPath, it) }
+}
 
 private class TerrainMapHolder {
     var webView: WebView? = null
     var pageReady: Boolean = false
     var pendingJson: String? = null
     var lastSentJson: String? = null
+    var sentBaseKey: String = ""
+    var sentGuideKey: String = ""
     var cachedPtsRef: List<TrackPoint> = emptyList()
     var cachedGeoHash: Int = 0
     var cachedRefPace: Int = -1
@@ -258,14 +276,14 @@ private fun serveLocalAsset(ctx: Context, name: String): WebResourceResponse? {
         else -> return null
     }
     return runCatching {
-        val stream = ctx.assets.open(clean.first)
+        val bytes = MapLibreAssetCache.getBytes(ctx, clean.first) ?: return null
         WebResourceResponse(
             clean.second,
             "UTF-8",
             200,
             "OK",
             mapOf("Access-Control-Allow-Origin" to "*"),
-            stream
+            ByteArrayInputStream(bytes)
         )
     }.getOrNull()
 }
@@ -372,17 +390,25 @@ private fun buildTerrainPayload(
         root.put("routeStart", JSONArray().put(routePts.first().longitude).put(routePts.first().latitude))
     }
 
-    val baseArr = JSONArray()
-    if (validPts.size >= 2) {
-        for (p in validPts) baseArr.put(JSONArray().put(p.longitude).put(p.latitude))
+    val baseKey = "${validPts.size}_$geoHash"
+    if (!h.pageReady || baseKey != h.sentBaseKey) {
+        val baseArr = JSONArray()
+        if (validPts.size >= 2) {
+            for (p in validPts) baseArr.put(JSONArray().put(p.longitude).put(p.latitude))
+        }
+        root.put("base", baseArr)
+        if (h.pageReady) h.sentBaseKey = baseKey
     }
-    root.put("base", baseArr)
 
-    val guideArr = JSONArray()
-    if (validGuide.size >= 2) {
-        for (p in validGuide) guideArr.put(JSONArray().put(p.longitude).put(p.latitude))
+    val guideKey = "${validGuide.size}_${validGuide.firstOrNull()?.latitude}_${validGuide.lastOrNull()?.longitude}"
+    if (!h.pageReady || guideKey != h.sentGuideKey) {
+        val guideArr = JSONArray()
+        if (validGuide.size >= 2) {
+            for (p in validGuide) guideArr.put(JSONArray().put(p.longitude).put(p.latitude))
+        }
+        root.put("guide", guideArr)
+        if (h.pageReady) h.sentGuideKey = guideKey
     }
-    root.put("guide", guideArr)
 
     val wpArr = JSONArray()
     validWaypoints.forEachIndexed { idx, p ->
@@ -568,7 +594,7 @@ private fun buildTerrainHtml(bgHex: String): String = """
           'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], 12],
           'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0],
           'fill-extrusion-color': '#3A4354',
-          'fill-extrusion-opacity': 0.86
+          'fill-extrusion-opacity': 1.0
         }
       };
       var bBefore = map.getLayer('highway_name_other') ? 'highway_name_other' : (map.getLayer('place_city') ? 'place_city' : undefined);
@@ -736,8 +762,16 @@ private fun buildTerrainHtml(bgHex: String): String = """
       }
     }
 
-    if (map.getSource('guide-src')) map.getSource('guide-src').setData(lineFc(p.guide));
-    if (map.getSource('base-src')) map.getSource('base-src').setData(lineFc(p.base));
+    if (p.guide !== undefined) state.lastGuide = p.guide;
+    if (p.base !== undefined) state.lastBase = p.base;
+    if (map.getSource('guide-src') && (p.guide !== undefined || fromResize || !state.guideSet)) {
+      map.getSource('guide-src').setData(lineFc(state.lastGuide));
+      state.guideSet = true;
+    }
+    if (map.getSource('base-src') && (p.base !== undefined || fromResize || !state.baseSet)) {
+      map.getSource('base-src').setData(lineFc(state.lastBase));
+      state.baseSet = true;
+    }
     if (map.getSource('active-src')) map.getSource('active-src').setData(p.colorByPace ? emptyFc() : lineFc(p.active));
 
     if (map.getSource('pace-src')) {
@@ -865,7 +899,10 @@ private fun buildTerrainHtml(bgHex: String): String = """
         zoom: 15.2,
         pitch: 48,
         attributionControl: false,
-        preserveDrawingBuffer: true
+        antialias: false,
+        fadeDuration: 0,
+        maxTileCacheSize: 64,
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
       });
       state.map = map;
       map.on('error', function(ev) {
@@ -894,6 +931,8 @@ private fun buildTerrainHtml(bgHex: String): String = """
     } else if (state.activeStyle !== p.styleUri) {
       state.activeStyle = p.styleUri;
       state.styleReady = false;
+      state.baseSet = false;
+      state.guideSet = false;
       state.map.setStyle(p.styleUri);
     }
   }

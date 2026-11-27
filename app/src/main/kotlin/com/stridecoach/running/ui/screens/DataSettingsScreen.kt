@@ -79,25 +79,25 @@ private enum class SettingsPage(
     val accent: Color
 ) {
     APPEARANCE(
-        title = "Appearance & Themes",
+        title = "Themes & Style",
         subtitle = "Dark/Light mode, accent palette, map theme",
         icon = Icons.Default.Palette,
         accent = KdePurple
     ),
     MAPS_3D(
-        title = "Maps, 3D & Topography",
+        title = "Maps & 3D Terrain",
         subtitle = "Physical 3D terrain hills, buildings, pace gradient",
         icon = Icons.Default.Map,
         accent = KdeSky
     ),
     COACHING(
-        title = "Coaching, Pace & Sensors",
+        title = "Coaching & Pace",
         subtitle = "Pace zones baseline, slope targets, TTS & IMU",
         icon = Icons.AutoMirrored.Filled.DirectionsRun,
         accent = PaceOnTarget
     ),
     LOCK_DETECT(
-        title = "Lockscreen, Mistouch & Health",
+        title = "Lockscreen & Health",
         subtitle = "2-tap widget guard, Health Connect, battery, auto-detect",
         icon = Icons.Default.Lock,
         accent = PaceTooFast
@@ -204,7 +204,7 @@ fun DataSettingsScreen(
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            placeholder = { Text("Search settings, 3D terrain, sync, lockscreen…") },
+            placeholder = { Text("Search settings…", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = KdeMuted) },
             trailingIcon = {
                 if (query.isNotBlank()) {
@@ -328,7 +328,7 @@ private fun SettingsHubBody(
                     Icon(page.icon, contentDescription = null, tint = page.accent, modifier = Modifier.size(22.dp))
                 }
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(page.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(page.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     Text(page.subtitle, style = MaterialTheme.typography.bodySmall, color = KdeMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
                 Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
