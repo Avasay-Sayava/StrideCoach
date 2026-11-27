@@ -25,11 +25,14 @@
     return;
   }
 
+  window.__scPerf = { frames: 0, syncMsSum: 0, syncCount: 0, lastFrameMs: 0 };
+
   var state = {
     map: null,
     styleReady: false,
     activeStyle: '',
-    lastPayload: null,
+    lastStatic: null,
+    lastFrame: null,
     lastCamMode: '',
     lastFitKey: '',
     lastFollowKey: '',
@@ -38,10 +41,24 @@
     hiAnimTimer: null,
     lastExag: -1,
     lastInteractive: true,
-    guideSet: false,
-    baseSet: false,
-    lastGuide: [],
-    lastBase: []
+    lastBuildingsVis: '',
+    lastHillVis: '',
+    lastHeadKey: '',
+    lastUserDotKey: '',
+    lastGuideKey: '',
+    lastWpsKey: '',
+    lastTrimKey: '',
+    lastHiDataKey: '',
+    lastBaseKey: '',
+    stops: [],
+    stopsKey: '',
+    lastGradFrac: -1,
+    lastGradMs: 0,
+    lastGradMode: null,
+    lastGradStopsKey: '',
+    lastPaceOpacity: 1,
+    cachedBase: [],
+    cachedGuide: []
   };
 
   function emptyFc() { return { type: 'FeatureCollection', features: [] }; }
@@ -54,6 +71,40 @@
     return { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: pt }, properties: {} }] };
   }
 
+  function invalidateTerrainRtt(map) {
+    var tr = map && map.painter && map.painter.terrain;
+    if (!tr || !tr.sourceCache || !tr.sourceCache.getRenderableTiles) return;
+    var tiles = tr.sourceCache.getRenderableTiles();
+    for (var i = 0; i < tiles.length; i++) tiles[i].rtt = [];
+  }
+
+  function reorganizeLayersForSinglePassTerrain(map) {
+    var st = map.getStyle();
+    var layers = st && st.layers;
+    if (!layers) return;
+    var syms = [];
+    for (var i = 0; i < layers.length; i++) {
+      var id = layers[i].id;
+      if (layers[i].type === 'symbol') syms.push(id);
+      else if (layers[i].type === 'fill-extrusion' && id !== '3d-buildings-layer') {
+        map.setLayoutProperty(id, 'visibility', 'none');
+      }
+    }
+    for (var j = 0; j < syms.length; j++) {
+      if (map.getLayer(syms[j])) map.moveLayer(syms[j]);
+    }
+  }
+
+  function findFirstSymbolId(map) {
+    var st = map.getStyle();
+    var layers = st && st.layers;
+    if (!layers) return undefined;
+    for (var i = 0; i < layers.length; i++) {
+      if (layers[i].type === 'symbol') return layers[i].id;
+    }
+    return undefined;
+  }
+
   function ensureTerrainAndLayers(map, p) {
     if (!map.getSource('terrain-dem')) {
       map.addSource('terrain-dem', {
@@ -64,21 +115,24 @@
         maxzoom: 13
       });
     }
+    var exag = (p && p.exag) ? p.exag : 2.2;
     try {
-      map.setTerrain({ source: 'terrain-dem', exaggeration: p.exag || 2.2 });
-      state.lastExag = p.exag || 2.2;
+      map.setTerrain({ source: 'terrain-dem', exaggeration: exag });
+      state.lastExag = exag;
     } catch (e) {
       StrideBridge.onWebGlUnsupported();
       return;
     }
 
-    var beforeId = map.getLayer('building') ? 'building' : (map.getLayer('water_name') ? 'water_name' : undefined);
+    reorganizeLayersForSinglePassTerrain(map);
+    var firstSym = findFirstSymbolId(map);
+    var hsBefore = map.getLayer('building') ? 'building' : (map.getLayer('water_name') ? 'water_name' : firstSym);
     if (!map.getLayer('terrain-hillshade-layer')) {
       var hsDef = { id: 'terrain-hillshade-layer', type: 'hillshade', source: 'terrain-dem', paint: { 'hillshade-exaggeration': 0.34 } };
-      if (beforeId) map.addLayer(hsDef, beforeId); else map.addLayer(hsDef);
+      if (hsBefore) map.addLayer(hsDef, hsBefore); else map.addLayer(hsDef);
     }
 
-    installRouteAndMarkerLayers(map);
+    installRouteLayersBefore(map, firstSym);
 
     if (map.getSource('openmaptiles') && !map.getLayer('3d-buildings-layer')) {
       var bldDef = {
@@ -94,23 +148,32 @@
           'fill-extrusion-opacity': 1.0
         }
       };
-      map.addLayer(bldDef);
+      if (firstSym) map.addLayer(bldDef, firstSym); else map.addLayer(bldDef);
     }
+
+    installMarkerLayers(map);
   }
 
-  function installRouteAndMarkerLayers(map) {
-    var srcs = ['guide-src','base-src','pace-src','active-src','trim-src','hi-src','planner-pts-src','user-loc-src','head-src'];
+  function installRouteLayersBefore(map, beforeId) {
+    var srcs = ['guide-src', 'base-src', 'trim-src', 'hi-src'];
     for (var i = 0; i < srcs.length; i++) {
       if (!map.getSource(srcs[i])) map.addSource(srcs[i], { type: 'geojson', data: emptyFc() });
     }
+    if (!map.getSource('pace-src')) {
+      map.addSource('pace-src', { type: 'geojson', lineMetrics: true, data: emptyFc() });
+    }
+    addLineLayerIfMissing(map, 'guide-layer', 'guide-src', { 'line-color': '#3DAEE9', 'line-width': 3.6, 'line-dasharray': [2.2, 1.8] }, beforeId);
+    addLineLayerIfMissing(map, 'base-layer', 'base-src', { 'line-color': '#473C69', 'line-width': 4.0 }, beforeId);
+    addLineLayerIfMissing(map, 'hi-layer', 'hi-src', { 'line-color': '#256F96', 'line-width': 10.5, 'line-opacity': 1.0, 'line-blur': 0.0 }, beforeId);
+    addLineLayerIfMissing(map, 'pace-layer', 'pace-src', { 'line-color': '#926EE4', 'line-width': 5.4, 'line-opacity': 1.0 }, beforeId);
+    addLineLayerIfMissing(map, 'trim-layer', 'trim-src', { 'line-color': '#F87171', 'line-width': 5.4 }, beforeId);
+  }
 
-    addLineLayerIfMissing(map, 'guide-layer', 'guide-src', { 'line-color': '#3DAEE9', 'line-width': 3.6, 'line-dasharray': [2.2, 1.8] });
-    addLineLayerIfMissing(map, 'base-layer', 'base-src', { 'line-color': '#473C69', 'line-width': 4.0 });
-    addLineLayerIfMissing(map, 'hi-layer', 'hi-src', { 'line-color': '#256F96', 'line-width': 10.5, 'line-opacity': 1.0, 'line-blur': 0.0 });
-    addLineLayerIfMissing(map, 'pace-layer', 'pace-src', { 'line-color': ['get', 'col'], 'line-width': 5.4 });
-    addLineLayerIfMissing(map, 'active-layer', 'active-src', { 'line-color': '#926EE4', 'line-width': 5.5 });
-    addLineLayerIfMissing(map, 'trim-layer', 'trim-src', { 'line-color': '#F87171', 'line-width': 5.4 });
-
+  function installMarkerLayers(map) {
+    var mSrcs = ['planner-pts-src', 'user-loc-src', 'head-src'];
+    for (var i = 0; i < mSrcs.length; i++) {
+      if (!map.getSource(mSrcs[i])) map.addSource(mSrcs[i], { type: 'geojson', data: emptyFc() });
+    }
     if (!map.getLayer('planner-pts-layer')) {
       map.addLayer({
         id: 'planner-pts-layer', type: 'circle', source: 'planner-pts-src',
@@ -134,9 +197,10 @@
     }
   }
 
-  function addLineLayerIfMissing(map, id, src, paint) {
+  function addLineLayerIfMissing(map, id, src, paint, beforeId) {
     if (map.getLayer(id)) return;
-    map.addLayer({ id: id, type: 'line', source: src, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: paint });
+    var def = { id: id, type: 'line', source: src, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: paint };
+    if (beforeId) map.addLayer(def, beforeId); else map.addLayer(def);
   }
 
   function pulseHighlight(map, p) {
@@ -144,7 +208,7 @@
     if (state.hiAnimTimer) clearInterval(state.hiAnimTimer);
     var startMs = Date.now();
     state.hiAnimTimer = setInterval(function() {
-      if (!map.getLayer('hi-layer')) { clearInterval(state.hiAnimTimer); return; }
+      if (!map.getLayer('hi-layer')) { clearInterval(state.hiAnimTimer); state.hiAnimTimer = null; return; }
       var dt = Date.now() - startMs;
       if (dt < 340) {
         var t = dt / 340.0;
@@ -163,7 +227,8 @@
         clearInterval(state.hiAnimTimer);
         state.hiAnimTimer = null;
       }
-    }, 32);
+      invalidateTerrainRtt(map);
+    }, 45);
   }
 
   function computeFitCamera(bounds, w, h, padT, padB, padS, pitchDeg) {
@@ -191,148 +256,234 @@
     };
   }
 
-  function syncTerrainAndVisibility(map, p) {
+  function buildGradientExpr(stops, frac, colorByPace) {
+    if (!colorByPace || !stops || stops.length === 0) {
+      if (frac >= 0.999) return ['interpolate', ['linear'], ['line-progress'], 0, '#926EE4', 1, '#926EE4'];
+      var cEnd = Math.min(0.9988, Math.max(0.002, frac));
+      return ['interpolate', ['linear'], ['line-progress'], 0, '#926EE4', cEnd, '#926EE4', Math.min(1, cEnd + 0.0006), 'rgba(0,0,0,0)'];
+    }
+    var expr = ['interpolate', ['linear'], ['line-progress']];
+    var tailCol = stops[0].c;
+    if (frac >= 0.999) {
+      for (var i = 0; i < stops.length; i++) {
+        expr.push(stops[i].t, stops[i].c);
+      }
+      if (stops[stops.length - 1].t < 0.9999) expr.push(1.0, stops[stops.length - 1].c);
+      return expr;
+    }
+    var fEnd = Math.min(0.9988, Math.max(0.002, frac));
+    var prevT = -1;
+    for (var k = 0; k < stops.length; k++) {
+      var st = stops[k];
+      if (st.t < fEnd - 0.0005) {
+        if (st.t > prevT + 0.0001) {
+          expr.push(st.t, st.c);
+          prevT = st.t;
+        }
+        tailCol = st.c;
+      } else {
+        break;
+      }
+    }
+    if (prevT < 0) expr.push(0.0, stops[0].c);
+    expr.push(fEnd, tailCol);
+    expr.push(Math.min(1.0, fEnd + 0.0006), 'rgba(0,0,0,0)');
+    return expr;
+  }
+
+  function applyPaceGradient(map, frac, colorByPace, force) {
+    if (!map.getLayer('pace-layer')) return;
+    var isZero = frac <= 0.0005;
+    if (isZero) {
+      if (state.lastPaceOpacity !== 0) {
+        state.lastPaceOpacity = 0;
+        map.setPaintProperty('pace-layer', 'line-opacity', 0);
+        invalidateTerrainRtt(map);
+      }
+      state.lastGradFrac = 0;
+      state.lastGradMode = colorByPace;
+      return;
+    }
+    if (state.lastPaceOpacity !== 1) {
+      state.lastPaceOpacity = 1;
+      map.setPaintProperty('pace-layer', 'line-opacity', 1);
+    }
+    var now = Date.now();
+    var isFull = frac >= 0.999;
+    var wasFull = state.lastGradFrac >= 0.999;
+    var changedMode = colorByPace !== state.lastGradMode || state.stopsKey !== state.lastGradStopsKey;
+    var endpointChanged = isFull !== wasFull || state.lastGradFrac <= 0.0005;
+    if (!force && !changedMode && !endpointChanged) {
+      if (now - state.lastGradMs < 55 || Math.abs(frac - state.lastGradFrac) < 0.0035) return;
+    }
+    state.lastGradFrac = frac;
+    state.lastGradMs = now;
+    state.lastGradMode = colorByPace;
+    state.lastGradStopsKey = state.stopsKey;
+    map.setPaintProperty('pace-layer', 'line-gradient', buildGradientExpr(state.stops, frac, colorByPace));
+    invalidateTerrainRtt(map);
+  }
+
+  function syncStaticState(map, p) {
     if (Math.abs((p.exag || 2.2) - state.lastExag) > 0.05) {
       try { map.setTerrain({ source: 'terrain-dem', exaggeration: p.exag || 2.2 }); state.lastExag = p.exag || 2.2; } catch (e) {}
     }
-    if (map.getLayer('terrain-hillshade-layer')) {
-      map.setLayoutProperty('terrain-hillshade-layer', 'visibility', p.showHillshade ? 'visible' : 'none');
+    var hillVis = p.showHillshade ? 'visible' : 'none';
+    if (hillVis !== state.lastHillVis && map.getLayer('terrain-hillshade-layer')) {
+      state.lastHillVis = hillVis;
+      map.setLayoutProperty('terrain-hillshade-layer', 'visibility', hillVis);
     }
-    if (map.getLayer('3d-buildings-layer')) {
-      map.setLayoutProperty('3d-buildings-layer', 'visibility', p.showBuildings ? 'visible' : 'none');
+    var bldVis = p.showBuildings ? 'visible' : 'none';
+    if (bldVis !== state.lastBuildingsVis && map.getLayer('3d-buildings-layer')) {
+      state.lastBuildingsVis = bldVis;
+      map.setLayoutProperty('3d-buildings-layer', 'visibility', bldVis);
     }
     if (p.interactive !== state.lastInteractive) {
       state.lastInteractive = p.interactive;
-      var hs = ['dragPan','scrollZoom','boxZoom','dragRotate','keyboard','doubleClickZoom','touchZoomRotate'];
+      var hs = ['dragPan', 'scrollZoom', 'boxZoom', 'dragRotate', 'keyboard', 'doubleClickZoom', 'touchZoomRotate'];
       for (var k = 0; k < hs.length; k++) {
         if (map[hs[k]]) { if (p.interactive) map[hs[k]].enable(); else map[hs[k]].disable(); }
       }
     }
-  }
 
-  function syncGeoSources(map, p, fromResize) {
-    if (p.guide !== undefined) state.lastGuide = p.guide;
-    if (p.base !== undefined) state.lastBase = p.base;
-    if (map.getSource('guide-src') && (p.guide !== undefined || fromResize || !state.guideSet)) {
-      map.getSource('guide-src').setData(lineFc(state.lastGuide));
-      state.guideSet = true;
+    var rttDirty = false;
+    if (p.guide !== undefined) state.cachedGuide = p.guide;
+    if ((p.guide !== undefined || state.lastGuideKey === '') && p.guideKey !== state.lastGuideKey && map.getSource('guide-src')) {
+      state.lastGuideKey = p.guideKey || '';
+      map.getSource('guide-src').setData(lineFc(state.cachedGuide));
+      rttDirty = true;
     }
-    if (map.getSource('base-src') && (p.base !== undefined || fromResize || !state.baseSet)) {
-      map.getSource('base-src').setData(lineFc(state.lastBase));
-      state.baseSet = true;
+    if (p.base !== undefined) state.cachedBase = p.base;
+    if ((p.base !== undefined || state.lastBaseKey === '') && p.baseKey !== state.lastBaseKey) {
+      state.lastBaseKey = p.baseKey || '';
+      var fc = lineFc(state.cachedBase);
+      if (map.getSource('base-src')) map.getSource('base-src').setData(fc);
+      if (map.getSource('pace-src')) map.getSource('pace-src').setData(fc);
+      rttDirty = true;
     }
-    if (map.getSource('active-src')) map.getSource('active-src').setData(p.colorByPace ? emptyFc() : lineFc(p.active));
-
-    if (map.getSource('pace-src')) {
-      var pf = (p.colorByPace && p.pace && p.pace.length) ? p.pace.map(function(s) {
-        return { type: 'Feature', geometry: { type: 'LineString', coordinates: s.coords }, properties: { col: s.col } };
-      }) : [];
-      map.getSource('pace-src').setData({ type: 'FeatureCollection', features: pf });
+    if (p.paceStops !== undefined && p.stopsKey !== state.stopsKey) {
+      state.stops = p.paceStops || [];
+      state.stopsKey = p.stopsKey || '';
     }
-    if (map.getSource('trim-src')) {
-      var tf = (p.trim || []).filter(function(c) { return c.length >= 2; }).map(function(c) {
-        return { type: 'Feature', geometry: { type: 'LineString', coordinates: c }, properties: {} };
-      });
-      map.getSource('trim-src').setData({ type: 'FeatureCollection', features: tf });
-    }
-    if (map.getSource('planner-pts-src')) {
+    if (p.waypoints !== undefined && p.wpsKey !== state.lastWpsKey && map.getSource('planner-pts-src')) {
+      state.lastWpsKey = p.wpsKey || '';
       var wf = (p.waypoints || []).map(function(w) {
         return { type: 'Feature', geometry: { type: 'Point', coordinates: [w.lon, w.lat] }, properties: { kind: w.kind } };
       });
       map.getSource('planner-pts-src').setData({ type: 'FeatureCollection', features: wf });
     }
-    if (map.getSource('user-loc-src')) map.getSource('user-loc-src').setData(p.showUserDot ? pointFc(p.userLoc) : emptyFc());
-    if (map.getSource('head-src')) map.getSource('head-src').setData(p.showHead ? pointFc(p.head) : emptyFc());
-  }
-
-  function syncHighlightState(map, p, el) {
-    if (!map.getSource('hi-src')) return;
-    map.getSource('hi-src').setData(lineFc(p.hi));
-    if (!p.hi || p.hi.length < 2 || p.hiTrigger === state.lastHiTrig) return;
-    state.lastHiTrig = p.hiTrigger;
-    if (p.hiBounds && el && el.clientWidth > 0 && el.clientHeight > 0) {
-      var hTop = Math.min(Math.round(p.fitTopClearCss + 14), Math.round(el.clientHeight * 0.36));
-      var hBot = Math.min(Math.round((p.hiBotCss || p.fitBotClearCss) + 20), Math.round(el.clientHeight * 0.38));
-      var hSide = Math.min(Math.round(p.fitSideCss + 12), Math.round(el.clientWidth * 0.22));
-      var hOpts = computeFitCamera(p.hiBounds, el.clientWidth, el.clientHeight, hTop, hBot, hSide, 46);
-      hOpts.duration = 520;
-      map.easeTo(hOpts);
+    if (p.trim !== undefined && p.trimKey !== state.lastTrimKey && map.getSource('trim-src')) {
+      state.lastTrimKey = p.trimKey || '';
+      var tf = (p.trim || []).filter(function(c) { return c.length >= 2; }).map(function(c) {
+        return { type: 'Feature', geometry: { type: 'LineString', coordinates: c }, properties: {} };
+      });
+      map.getSource('trim-src').setData({ type: 'FeatureCollection', features: tf });
+      rttDirty = true;
     }
-    pulseHighlight(map, p);
+    if (p.hi !== undefined && p.hiDataKey !== state.lastHiDataKey && map.getSource('hi-src')) {
+      state.lastHiDataKey = p.hiDataKey || '';
+      map.getSource('hi-src').setData(lineFc(p.hi));
+      rttDirty = true;
+    }
+    if (p.hi && p.hi.length >= 2 && p.hiTrigger !== state.lastHiTrig) {
+      state.lastHiTrig = p.hiTrigger;
+      var el = document.getElementById('map');
+      if (p.hiBounds && el && el.clientWidth > 0 && el.clientHeight > 0) {
+        var hTop = Math.min(Math.round(p.fitTopClearCss + 14), Math.round(el.clientHeight * 0.36));
+        var hBot = Math.min(Math.round((p.hiBotCss || p.fitBotClearCss) + 20), Math.round(el.clientHeight * 0.38));
+        var hSide = Math.min(Math.round(p.fitSideCss + 12), Math.round(el.clientWidth * 0.22));
+        var hOpts = computeFitCamera(p.hiBounds, el.clientWidth, el.clientHeight, hTop, hBot, hSide, 46);
+        hOpts.duration = 520;
+        map.easeTo(hOpts);
+      }
+      pulseHighlight(map, p);
+    }
+    if (rttDirty) invalidateTerrainRtt(map);
+    if (state.lastFrame) {
+      applyPaceGradient(map, state.lastFrame.frac, state.lastFrame.colorByPace, true);
+    }
   }
 
-  function syncCameraState(map, p, el) {
-    if (!el || el.clientWidth <= 0 || el.clientHeight <= 0) return;
-    var modeChanged = state.lastCamMode !== '' && state.lastCamMode !== p.camMode;
-    var safeTop = Math.max(12, Math.round(p.fitTopClearCss));
-    var safeBot = Math.max(12, Math.round(p.fitBotClearCss));
+  function syncCamera(map, s, f) {
+    var el = document.getElementById('map');
+    if (!el || el.clientWidth <= 0 || el.clientHeight <= 0 || !f) return;
+    var modeChanged = state.lastCamMode !== '' && state.lastCamMode !== f.camMode;
+    var safeTop = Math.max(12, Math.round(f.fitTopClearCss));
+    var safeBot = Math.max(12, Math.round(f.fitBotClearCss));
     var maxV = Math.max(40, Math.round(el.clientHeight * 0.62));
     if (safeTop + safeBot > maxV) {
-      var s = maxV / (safeTop + safeBot);
-      safeTop = Math.max(12, Math.round(safeTop * s));
-      safeBot = Math.max(12, Math.round(safeBot * s));
+      var sc = maxV / (safeTop + safeBot);
+      safeTop = Math.max(12, Math.round(safeTop * sc));
+      safeBot = Math.max(12, Math.round(safeBot * sc));
     }
-    var safeSide = Math.min(Math.max(12, Math.round(p.fitSideCss)), Math.round(el.clientWidth * 0.22));
-    var topPad = Math.min(Math.max(0, Math.round(p.topCss)), Math.round(el.clientHeight * 0.42));
-    var botPad = Math.min(Math.max(0, Math.round(p.botCss)), Math.round(el.clientHeight * 0.44));
+    var safeSide = Math.min(Math.max(12, Math.round(f.fitSideCss)), Math.round(el.clientWidth * 0.22));
+    var topPad = Math.min(Math.max(0, Math.round(f.topCss)), Math.round(el.clientHeight * 0.42));
+    var botPad = Math.min(Math.max(0, Math.round(f.botCss)), Math.round(el.clientHeight * 0.44));
 
-    if (p.camMode === 'FIT_ROUTE') {
+    if (f.camMode === 'FIT_ROUTE') {
       state.lastFollowKey = '';
-      var fKey = p.bounds
-        ? (p.ptsCount + '_' + p.geoHash + '_' + p.recenter + '_' + Math.round(safeTop / 12) + '_' + Math.round(safeBot / 12) + '_' + Math.round(el.clientWidth / 24) + '_' + Math.round(el.clientHeight / 24))
-        : ('empty_' + (p.userLoc || p.fallback)[0].toFixed(5) + '_' + (p.userLoc || p.fallback)[1].toFixed(5) + '_' + p.recenter);
+      var fKey = s.bounds
+        ? (s.ptsCount + '_' + s.geoHash + '_' + f.recenter + '_' + Math.round(safeTop / 12) + '_' + Math.round(safeBot / 12) + '_' + Math.round(el.clientWidth / 24) + '_' + Math.round(el.clientHeight / 24))
+        : ('empty_' + (f.userLoc || s.fallback)[0].toFixed(5) + '_' + (f.userLoc || s.fallback)[1].toFixed(5) + '_' + f.recenter);
       if (fKey !== state.lastFitKey || modeChanged) {
         state.lastFitKey = fKey;
         map.stop();
-        map.jumpTo(p.bounds
-          ? computeFitCamera(p.bounds, el.clientWidth, el.clientHeight, safeTop, safeBot, safeSide, 48)
-          : { center: p.userLoc || p.fallback, zoom: 15.6, pitch: 48, bearing: 0, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } });
+        map.jumpTo(s.bounds
+          ? computeFitCamera(s.bounds, el.clientWidth, el.clientHeight, safeTop, safeBot, safeSide, 48)
+          : { center: f.userLoc || s.fallback, zoom: 15.6, pitch: 48, bearing: 0, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } });
       }
-    } else if (p.camMode === 'FOLLOW_RUNNER') {
+    } else if (f.camMode === 'FOLLOW_RUNNER') {
       state.lastFitKey = '';
-      var tgt = p.head || p.routeEnd || p.userLoc || p.routeStart || p.fallback;
-      var flwKey = tgt[0].toFixed(6) + '_' + tgt[1].toFixed(6) + '_' + p.recenter + '_' + Math.round(topPad / 12) + '_' + Math.round(botPad / 12) + '_' + Math.round(p.liveHeading || 0) + '_' + Math.round(el.clientWidth / 24);
+      var tgt = f.head || s.routeEnd || f.userLoc || s.routeStart || s.fallback;
+      var flwKey = tgt[0].toFixed(6) + '_' + tgt[1].toFixed(6) + '_' + f.recenter + '_' + Math.round(topPad / 12) + '_' + Math.round(botPad / 12) + '_' + Math.round(f.liveHeading || 0) + '_' + Math.round(el.clientWidth / 24);
       if (flwKey !== state.lastFollowKey || modeChanged) {
         var first = state.lastFollowKey === '';
         state.lastFollowKey = flwKey;
-        var opts = { center: tgt, zoom: (first || modeChanged || map.getZoom() < 15.6) ? 16.4 : map.getZoom(), pitch: 56, bearing: p.liveHeading || 0, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } };
-        if (first || (!modeChanged && p.showHead)) map.jumpTo(opts); else { opts.duration = 340; map.easeTo(opts); }
+        var opts = { center: tgt, zoom: (first || modeChanged || map.getZoom() < 15.6) ? 16.4 : map.getZoom(), pitch: 56, bearing: f.liveHeading || 0, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } };
+        if (first || (!modeChanged && f.showHead)) map.jumpTo(opts); else { opts.duration = 340; map.easeTo(opts); }
       }
     } else {
       state.lastFitKey = '';
       state.lastFollowKey = '';
       if (!state.lastFreeInit) {
         state.lastFreeInit = true;
-        map.jumpTo({ center: p.userLoc || p.routeStart || p.fallback, zoom: 15.6, pitch: 48, bearing: 0, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } });
+        map.jumpTo({ center: f.userLoc || s.routeStart || s.fallback, zoom: 15.6, pitch: 48, bearing: 0, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } });
       }
     }
-    state.lastCamMode = p.camMode;
+    state.lastCamMode = f.camMode;
   }
 
-  function syncDataAndCamera(p, fromResize) {
-    var map = state.map;
-    if (!map || !state.styleReady) return;
-    var el = document.getElementById('map');
-    syncTerrainAndVisibility(map, p);
-    syncGeoSources(map, p, fromResize);
-    syncHighlightState(map, p, el);
-    syncCameraState(map, p, el);
+  function syncFrameState(map, f) {
+    var uk = f.showUserDot && f.userLoc ? (f.userLoc[0].toFixed(6) + ',' + f.userLoc[1].toFixed(6)) : 'off';
+    if (uk !== state.lastUserDotKey && map.getSource('user-loc-src')) {
+      state.lastUserDotKey = uk;
+      map.getSource('user-loc-src').setData(f.showUserDot ? pointFc(f.userLoc) : emptyFc());
+    }
+    var hk = f.showHead && f.head ? (f.head[0].toFixed(6) + ',' + f.head[1].toFixed(6)) : 'off';
+    if (hk !== state.lastHeadKey && map.getSource('head-src')) {
+      state.lastHeadKey = hk;
+      map.getSource('head-src').setData(f.showHead ? pointFc(f.head) : emptyFc());
+    }
+    applyPaceGradient(map, f.frac, !!f.colorByPace, false);
+    if (state.lastStatic) syncCamera(map, state.lastStatic, f);
   }
 
-  function initOrSwapMap(p) {
+  function initOrSwapMap(s) {
     if (!state.map) {
-      state.activeStyle = p.styleUri;
+      state.activeStyle = s.styleUri;
+      var f = state.lastFrame || {};
       var map = new maplibregl.Map({
         container: 'map',
-        style: p.styleUri,
-        center: p.head || p.routeStart || p.userLoc || p.fallback,
+        style: s.styleUri,
+        center: f.head || s.routeStart || f.userLoc || s.fallback,
         zoom: 15.2,
         pitch: 48,
         attributionControl: false,
         antialias: false,
         fadeDuration: 0,
-        maxTileCacheSize: 64,
-        pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
+        maxTileCacheSize: 48,
+        refreshExpiredTiles: false,
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 1.5)
       });
       state.map = map;
       map.on('error', function(ev) { if (ev && ev.error && /webgl/i.test(String(ev.error))) StrideBridge.onWebGlUnsupported(); });
@@ -343,28 +494,51 @@
       map.on('rotatestart', firePan);
       map.on('pitchstart', firePan);
       map.on('click', function(e) { if (e && e.lngLat) StrideBridge.onMapTap(e.lngLat.lat, e.lngLat.lng); });
-      map.on('resize', function() { if (state.lastPayload) syncDataAndCamera(state.lastPayload, true); });
+      map.on('resize', function() { if (state.lastStatic && state.lastFrame) syncCamera(map, state.lastStatic, state.lastFrame); });
+      map.on('render', function() { window.__scPerf.frames++; window.__scPerf.lastFrameMs = Date.now(); });
       map.on('style.load', function() {
         state.styleReady = true;
-        var cur = state.lastPayload || p;
+        resetCachedKeys();
+        var cur = state.lastStatic || s;
         ensureTerrainAndLayers(map, cur);
-        syncDataAndCamera(cur, false);
+        syncStaticState(map, cur);
+        if (state.lastFrame) syncFrameState(map, state.lastFrame);
       });
-    } else if (state.activeStyle !== p.styleUri) {
-      state.activeStyle = p.styleUri;
+    } else if (state.activeStyle !== s.styleUri) {
+      state.activeStyle = s.styleUri;
       state.styleReady = false;
-      state.baseSet = false;
-      state.guideSet = false;
-      state.map.setStyle(p.styleUri);
+      resetCachedKeys();
+      state.map.setStyle(s.styleUri);
     }
   }
 
-  window.__scUpdateScene = function(jsonStr) {
+  function resetCachedKeys() {
+    state.lastGuideKey = ''; state.lastBaseKey = ''; state.lastWpsKey = '';
+    state.lastTrimKey = ''; state.lastHiDataKey = ''; state.lastHeadKey = '';
+    state.lastUserDotKey = ''; state.lastBuildingsVis = ''; state.lastHillVis = '';
+    state.lastGradMode = null; state.lastGradFrac = -1; state.lastPaceOpacity = -1;
+  }
+
+  window.__scSyncStatic = function(jsonStr) {
     try {
-      var p = JSON.parse(jsonStr);
-      state.lastPayload = p;
-      initOrSwapMap(p);
-      if (state.styleReady) syncDataAndCamera(p, false);
+      var t0 = performance.now();
+      var s = JSON.parse(jsonStr);
+      state.lastStatic = s;
+      initOrSwapMap(s);
+      if (state.styleReady && state.map) syncStaticState(state.map, s);
+      window.__scPerf.syncMsSum += performance.now() - t0;
+      window.__scPerf.syncCount++;
+    } catch (e) {}
+  };
+
+  window.__scSyncFrame = function(jsonStr) {
+    try {
+      var t0 = performance.now();
+      var f = JSON.parse(jsonStr);
+      state.lastFrame = f;
+      if (state.styleReady && state.map) syncFrameState(state.map, f);
+      window.__scPerf.syncMsSum += performance.now() - t0;
+      window.__scPerf.syncCount++;
     } catch (e) {}
   };
 

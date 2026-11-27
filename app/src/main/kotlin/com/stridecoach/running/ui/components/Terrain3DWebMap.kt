@@ -32,9 +32,9 @@ import com.stridecoach.running.ui.theme.KdeBg
 import com.stridecoach.running.ui.theme.StrideThemeState
 import org.json.JSONArray
 import org.json.JSONObject
-import org.maplibre.geojson.LineString
 import java.io.ByteArrayInputStream
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 private const val ASSET_PREFIX = "https://stridecoach.local/assets/maplibre/"
 
@@ -59,15 +59,13 @@ internal object MapLibreAssetCache {
 
 private class TerrainMapHolder {
     var ready = false
-    var queued: String? = null
-    var lastJson: String? = null
-    var baseKey = ""
-    var guideKey = ""
-    var ptsRef: List<TrackPoint> = emptyList()
-    var geoHash = 0
-    var refPace = -1
-    var smoothGrad = true
-    var chunks: List<ColorChunk> = emptyList()
+    var inFlight = false
+    var queuedStatic: String? = null
+    var queuedFrame: String? = null
+    var lastStatic = ""
+    var lastFrame = ""
+    var sentBaseKey = ""
+    var sentGuideKey = ""
 }
 
 internal class TerrainJsBridge(
@@ -128,6 +126,10 @@ internal fun Terrain3DWebMap(
     val style = resolveMapStyleUri(mapStyleMode, StrideThemeState.isLight)
     val bgHex = "#%06X".format(KdeBg.toArgb() and 0xFFFFFF)
 
+    val prep = remember(pts, refPaceSec, smoothGradient) { prepareRoute(pts, refPaceSec, smoothGradient) }
+    val validGuide = remember(guidePts) { guidePts.filter { isValidCoord(it.latitude, it.longitude) } }
+    val validWps = remember(plannerWaypoints) { plannerWaypoints.filter { isValidCoord(it.latitude, it.longitude) } }
+
     val panCb = rememberUpdatedState(onUserManualPan)
     val tapCb = rememberUpdatedState(onMapTap)
     val unsupCb = rememberUpdatedState(onWebGlUnsupported)
@@ -138,27 +140,39 @@ internal fun Terrain3DWebMap(
 
     BindWebLifecycle(owner, wv)
 
+    val topCss = qCss(effectiveTopPx, d)
+    val botCss = qCss(effectiveBottomPx, d)
+    val fitTopCss = qCss(fitTopClearPx, d)
+    val fitBotCss = qCss(fitBottomClearPx, d)
+    val fitSideCss = qCss(fitSidePx, d)
+    val hiBotCss = qCss(hiBottomPx, d)
+
+    val staticJson = remember(
+        prep, validGuide, validWps, interactive, show3dBuildings, showTerrainHillshade,
+        terrainExaggeration, style, highlightRange, highlightTrigger, animateHighlight,
+        trimStartIdx, trimEndIdx, fallbackCenter, fitTopCss, fitBotCss, fitSideCss, hiBotCss
+    ) {
+        buildStaticJson(
+            h, prep, validGuide, validWps, interactive, show3dBuildings, showTerrainHillshade,
+            terrainExaggeration, style, highlightRange, highlightTrigger, animateHighlight,
+            trimStartIdx, trimEndIdx, fallbackCenter, fitTopCss, fitBotCss, fitSideCss, hiBotCss
+        )
+    }
+
     AndroidView(
         factory = { wv },
         update = { view ->
-            val raw = buildPayload(
-                h = h, pts = pts, head = replayHead, guide = guidePts, wps = plannerWaypoints,
-                loc = userLocation, interactive = interactive, showHead = showHead,
-                showDot = showUserDot, paceCol = colorByPace, smooth = smoothGradient,
-                refPace = refPaceSec, hi = highlightRange, hiTrig = highlightTrigger,
-                animHi = animateHighlight, trimS = trimStartIdx, trimE = trimEndIdx,
-                cam = cameraMode, bld = show3dBuildings, hill = showTerrainHillshade,
-                exag = terrainExaggeration, lockFit = lockAutoFit, style = style,
-                hdg = liveHeadingDeg, fb = fallbackCenter,
-                topCss = effectiveTopPx / d, botCss = effectiveBottomPx / d,
-                fitTopCss = fitTopClearPx / d, fitBotCss = fitBottomClearPx / d,
-                fitSideCss = fitSidePx / d, hiBotCss = hiBottomPx / d, recenter = recenterToken
+            val frameJson = buildFrameJson(
+                prep, replayHead, userLocation, showHead, showUserDot, colorByPace,
+                cameraMode, liveHeadingDeg, topCss, botCss, fitTopCss, fitBotCss, fitSideCss, recenterToken
             )
-            syncPayload(h, view, raw)
+            enqueueScene(h, view, staticJson, frameJson)
         },
         modifier = modifier
     )
 }
+
+private fun qCss(px: Int, density: Float): Int = (((px / density) / 4f).roundToInt() * 4)
 
 @Composable
 private fun BindWebLifecycle(owner: LifecycleOwner, wv: WebView) {
@@ -191,7 +205,7 @@ private fun makeWebView(
     wv.isVerticalScrollBarEnabled = false
     wv.isHorizontalScrollBarEnabled = false
     applyWebSettings(wv.settings)
-    wv.addJavascriptInterface(TerrainJsBridge({ flushQueued(h, wv) }, onPan, onTap, onUnsup), "StrideBridge")
+    wv.addJavascriptInterface(TerrainJsBridge({ onBridgeReady(h, wv) }, onPan, onTap, onUnsup), "StrideBridge")
     wv.webViewClient = assetWebClient(ctx)
     wv.loadDataWithBaseURL("https://stridecoach.local/", loadTerrainHtml(ctx, bgHex), "text/html", "UTF-8", null)
     return wv
@@ -222,130 +236,169 @@ private fun serveAsset(ctx: Context, name: String): WebResourceResponse? {
     return WebResourceResponse(mime, "UTF-8", 200, "OK", mapOf("Access-Control-Allow-Origin" to "*"), ByteArrayInputStream(bytes))
 }
 
-private fun flushQueued(h: TerrainMapHolder, wv: WebView) {
+private fun onBridgeReady(h: TerrainMapHolder, wv: WebView) {
     h.ready = true
-    val q = h.queued ?: return
-    h.queued = null
-    pushPayload(wv, q)
+    dispatchPending(h, wv)
 }
 
-private fun syncPayload(h: TerrainMapHolder, wv: WebView, raw: String) {
-    if (raw == h.lastJson) return
-    h.lastJson = raw
-    if (h.ready) pushPayload(wv, raw) else h.queued = raw
+private fun enqueueScene(h: TerrainMapHolder, wv: WebView, sJson: String, fJson: String) {
+    if (sJson != h.lastStatic) {
+        h.lastStatic = sJson
+        h.queuedStatic = sJson
+    }
+    if (fJson != h.lastFrame) {
+        h.lastFrame = fJson
+        h.queuedFrame = fJson
+    }
+    if (h.ready && !h.inFlight) dispatchPending(h, wv)
 }
 
-private fun pushPayload(wv: WebView, json: String) {
-    wv.evaluateJavascript("window.__scUpdateScene && window.__scUpdateScene(${JSONObject.quote(json)});", null)
+private fun dispatchPending(h: TerrainMapHolder, wv: WebView) {
+    val qs = h.queuedStatic
+    val qf = h.queuedFrame
+    if (qs == null && qf == null) return
+    val js = StringBuilder()
+    if (qs != null) {
+        h.queuedStatic = null
+        js.append("window.__scSyncStatic&&window.__scSyncStatic(").append(JSONObject.quote(qs)).append(");")
+    }
+    if (qf != null) {
+        h.queuedFrame = null
+        js.append("window.__scSyncFrame&&window.__scSyncFrame(").append(JSONObject.quote(qf)).append(");")
+    }
+    h.inFlight = true
+    wv.evaluateJavascript(js.toString()) {
+        h.inFlight = false
+        dispatchPending(h, wv)
+    }
 }
 
-private fun validCoord(lat: Double, lon: Double) = lat in -85.0..85.0 && lon in -179.9..179.9
-
-private fun buildPayload(
+private fun buildStaticJson(
     h: TerrainMapHolder,
-    pts: List<TrackPoint>,
-    head: ReplayHead?,
+    prep: PreparedRoute,
     guide: List<LatLon>,
     wps: List<LatLon>,
-    loc: LatLon?,
     interactive: Boolean,
-    showHead: Boolean,
-    showDot: Boolean,
-    paceCol: Boolean,
-    smooth: Boolean,
-    refPace: Int,
+    bld: Boolean,
+    hill: Boolean,
+    exag: Float,
+    style: String,
     hi: IntRange?,
     hiTrig: Int,
     animHi: Boolean,
     trimS: Int?,
     trimE: Int?,
-    cam: MapCameraMode,
-    bld: Boolean,
-    hill: Boolean,
-    exag: Float,
-    lockFit: Boolean,
-    style: String,
-    hdg: Float?,
     fb: LatLon,
-    topCss: Float,
-    botCss: Float,
-    fitTopCss: Float,
-    fitBotCss: Float,
-    fitSideCss: Float,
-    hiBotCss: Float,
-    recenter: Int
+    fitTopCss: Int,
+    fitBotCss: Int,
+    fitSideCss: Int,
+    hiBotCss: Int
 ): String {
-    val vp = pts.filter { validCoord(it.latitude, it.longitude) }
-    val vg = guide.filter { validCoord(it.latitude, it.longitude) }
-    val vw = wps.filter { validCoord(it.latitude, it.longitude) }
-    val gh = computePtsGeoHash(vp)
-
+    val vp = prep.pts
+    val bk = "${vp.size}_${prep.geoHash}"
+    val gk = "${guide.size}_${guide.firstOrNull()?.latitude}_${guide.lastOrNull()?.longitude}"
     val root = JSONObject()
         .put("styleUri", style)
         .put("interactive", interactive)
-        .put("showHead", showHead && vp.isNotEmpty())
-        .put("showUserDot", showDot && loc != null)
-        .put("colorByPace", paceCol)
         .put("showBuildings", bld)
         .put("showHillshade", hill)
         .put("exag", exag.coerceIn(1.0f, 4.0f).toDouble())
-        .put("camMode", cam.name)
-        .put("lockAutoFit", lockFit)
-        .put("recenter", recenter)
-        .put("geoHash", gh)
+        .put("geoHash", prep.geoHash)
         .put("ptsCount", vp.size)
-        .put("topCss", topCss.toDouble())
-        .put("botCss", botCss.toDouble())
-        .put("fitTopClearCss", fitTopCss.toDouble())
-        .put("fitBotClearCss", fitBotCss.toDouble())
-        .put("fitSideCss", fitSideCss.toDouble())
-        .put("hiBotCss", hiBotCss.toDouble())
+        .put("baseKey", bk)
+        .put("guideKey", gk)
+        .put("wpsKey", "${wps.size}_${wps.firstOrNull()?.latitude}_${wps.lastOrNull()?.longitude}")
+        .put("trimKey", "${vp.size}_${trimS}_${trimE}")
+        .put("hiDataKey", "${vp.size}_${hi?.first}_${hi?.last}")
+        .put("stopsKey", "${prep.geoHash}_${prep.stops.size}_${prep.stops.firstOrNull()?.hex}_${prep.stops.lastOrNull()?.hex}")
         .put("hiTrigger", hiTrig)
         .put("animateHi", animHi)
-        .put("liveHeading", (head?.bearingDeg ?: hdg ?: 0f).toDouble())
+        .put("fitTopClearCss", fitTopCss)
+        .put("fitBotClearCss", fitBotCss)
+        .put("fitSideCss", fitSideCss)
+        .put("hiBotCss", hiBotCss)
         .put("fallback", lonLat(fb.longitude, fb.latitude))
 
-    if (loc != null) root.put("userLoc", lonLat(loc.longitude, loc.latitude))
-    val hp = head?.let { LatLon(it.lat, it.lon) } ?: vp.lastOrNull()?.let { LatLon(it.latitude, it.longitude) }
-    if (hp != null) root.put("head", lonLat(hp.longitude, hp.latitude))
-
-    putBounds(root, if (vp.isNotEmpty()) vp.map { LatLon(it.latitude, it.longitude) } else vg)
-    putBaseAndGuide(root, h, vp, vg, gh)
-    putWaypoints(root, vw)
-    putSeries(root, h, vp, pts, head, paceCol, smooth, refPace, gh)
+    putBounds(root, prep, guide)
+    if (!h.ready || bk != h.sentBaseKey) {
+        val arr = JSONArray()
+        if (vp.size >= 2) vp.forEach { arr.put(lonLat(it.longitude, it.latitude)) }
+        root.put("base", arr)
+        if (h.ready) h.sentBaseKey = bk
+    }
+    if (!h.ready || gk != h.sentGuideKey) {
+        val arr = JSONArray()
+        if (guide.size >= 2) guide.forEach { arr.put(lonLat(it.longitude, it.latitude)) }
+        root.put("guide", arr)
+        if (h.ready) h.sentGuideKey = gk
+    }
+    putStops(root, prep.stops)
+    putWaypoints(root, wps)
     putTrim(root, vp, trimS, trimE)
-    putHighlight(root, vp, hi, hiTrig)
+    putHighlight(root, vp, hi)
     return root.toString()
+}
+
+private fun buildFrameJson(
+    prep: PreparedRoute,
+    head: ReplayHead?,
+    loc: LatLon?,
+    showHead: Boolean,
+    showDot: Boolean,
+    paceCol: Boolean,
+    cam: MapCameraMode,
+    hdg: Float?,
+    topCss: Int,
+    botCss: Int,
+    fitTopCss: Int,
+    fitBotCss: Int,
+    fitSideCss: Int,
+    recenter: Int
+): String {
+    val vp = prep.pts
+    val obj = JSONObject()
+        .put("showHead", showHead && vp.isNotEmpty())
+        .put("showUserDot", showDot && loc != null)
+        .put("colorByPace", paceCol)
+        .put("frac", headProgressFrac(prep, head))
+        .put("camMode", cam.name)
+        .put("recenter", recenter)
+        .put("topCss", topCss)
+        .put("botCss", botCss)
+        .put("fitTopClearCss", fitTopCss)
+        .put("fitBotClearCss", fitBotCss)
+        .put("fitSideCss", fitSideCss)
+        .put("liveHeading", (head?.bearingDeg ?: hdg ?: 0f).toDouble())
+    if (loc != null) obj.put("userLoc", lonLat(loc.longitude, loc.latitude))
+    val hp = head?.let { LatLon(it.lat, it.lon) } ?: vp.lastOrNull()?.let { LatLon(it.latitude, it.longitude) }
+    if (hp != null) obj.put("head", lonLat(hp.longitude, hp.latitude))
+    return obj.toString()
 }
 
 private fun lonLat(lon: Double, lat: Double) = JSONArray().put(lon).put(lat)
 
-private fun boundsPair(pts: List<LatLon>): JSONArray = JSONArray()
-    .put(lonLat(pts.minOf { it.longitude }, pts.minOf { it.latitude }))
-    .put(lonLat(pts.maxOf { it.longitude }, pts.maxOf { it.latitude }))
+private fun boundsPair(lo: LatLon, hi: LatLon): JSONArray = JSONArray()
+    .put(lonLat(lo.longitude, lo.latitude))
+    .put(lonLat(hi.longitude, hi.latitude))
 
-private fun putBounds(root: JSONObject, pts: List<LatLon>) {
-    if (pts.isEmpty()) return
-    root.put("bounds", boundsPair(pts))
-    root.put("routeStart", lonLat(pts.first().longitude, pts.first().latitude))
-    root.put("routeEnd", lonLat(pts.last().longitude, pts.last().latitude))
+private fun putBounds(root: JSONObject, prep: PreparedRoute, guide: List<LatLon>) {
+    val vp = prep.pts
+    val b = prep.bounds ?: if (guide.isNotEmpty()) {
+        LatLon(guide.minOf { it.latitude }, guide.minOf { it.longitude }) to
+            LatLon(guide.maxOf { it.latitude }, guide.maxOf { it.longitude })
+    } else null
+    if (b != null) root.put("bounds", boundsPair(b.first, b.second))
+    val pts = if (vp.isNotEmpty()) vp.first().let { LatLon(it.latitude, it.longitude) } to vp.last().let { LatLon(it.latitude, it.longitude) }
+    else if (guide.isNotEmpty()) guide.first() to guide.last() else null
+    if (pts == null) return
+    root.put("routeStart", lonLat(pts.first.longitude, pts.first.latitude))
+    root.put("routeEnd", lonLat(pts.second.longitude, pts.second.latitude))
 }
 
-private fun putBaseAndGuide(root: JSONObject, h: TerrainMapHolder, vp: List<TrackPoint>, vg: List<LatLon>, gh: Int) {
-    val bk = "${vp.size}_$gh"
-    if (!h.ready || bk != h.baseKey) {
-        val arr = JSONArray()
-        if (vp.size >= 2) vp.forEach { arr.put(lonLat(it.longitude, it.latitude)) }
-        root.put("base", arr)
-        if (h.ready) h.baseKey = bk
-    }
-    val gk = "${vg.size}_${vg.firstOrNull()?.latitude}_${vg.lastOrNull()?.longitude}"
-    if (!h.ready || gk != h.guideKey) {
-        val arr = JSONArray()
-        if (vg.size >= 2) vg.forEach { arr.put(lonLat(it.longitude, it.latitude)) }
-        root.put("guide", arr)
-        if (h.ready) h.guideKey = gk
-    }
+private fun putStops(root: JSONObject, stops: List<PaceStop>) {
+    val arr = JSONArray()
+    stops.forEach { s -> arr.put(JSONObject().put("t", s.frac).put("c", s.hex)) }
+    root.put("paceStops", arr)
 }
 
 private fun putWaypoints(root: JSONObject, wps: List<LatLon>) {
@@ -355,41 +408,6 @@ private fun putWaypoints(root: JSONObject, wps: List<LatLon>) {
         arr.put(JSONObject().put("lon", p.longitude).put("lat", p.latitude).put("kind", kind))
     }
     root.put("waypoints", arr)
-}
-
-private fun putSeries(
-    root: JSONObject,
-    h: TerrainMapHolder,
-    vp: List<TrackPoint>,
-    raw: List<TrackPoint>,
-    head: ReplayHead?,
-    paceCol: Boolean,
-    smooth: Boolean,
-    refPace: Int,
-    gh: Int
-) {
-    if (vp.size < 2) { root.put("pace", JSONArray()).put("active", JSONArray()); return }
-    if (!paceCol) {
-        val act = JSONArray()
-        buildActiveCoords(vp, head).forEach { act.put(lonLat(it.longitude(), it.latitude())) }
-        root.put("active", act).put("pace", JSONArray())
-        return
-    }
-    ensureChunks(h, vp, raw, refPace, smooth, gh)
-    val pace = JSONArray()
-    sliceChunksToHead(h.chunks, vp, head).forEach { f ->
-        val ls = f.geometry() as? LineString ?: return@forEach
-        val c = JSONArray()
-        ls.coordinates().forEach { c.put(lonLat(it.longitude(), it.latitude())) }
-        pace.put(JSONObject().put("col", f.getStringProperty("col") ?: "#926EE4").put("coords", c))
-    }
-    root.put("pace", pace).put("active", JSONArray())
-}
-
-private fun ensureChunks(h: TerrainMapHolder, vp: List<TrackPoint>, raw: List<TrackPoint>, ref: Int, smooth: Boolean, gh: Int) {
-    if (h.geoHash == gh && h.ptsRef === raw && h.refPace == ref && h.smoothGrad == smooth) return
-    h.geoHash = gh; h.ptsRef = raw; h.refPace = ref; h.smoothGrad = smooth
-    h.chunks = buildColorChunks(vp, ref, smooth)
 }
 
 private fun trackSliceArr(pts: List<TrackPoint>, range: IntRange): JSONArray {
@@ -407,18 +425,24 @@ private fun putTrim(root: JSONObject, vp: List<TrackPoint>, s: Int?, e: Int?) {
     root.put("trim", arr)
 }
 
-private fun putHighlight(root: JSONObject, vp: List<TrackPoint>, hi: IntRange?, trig: Int) {
-    val key = "${hi?.first}_${hi?.last}_$trig"
+private fun putHighlight(root: JSONObject, vp: List<TrackPoint>, hi: IntRange?) {
     if (hi == null || vp.size < 2 || hi.last - hi.first < 1) {
-        root.put("hi", JSONArray()).put("hiKey", key)
+        root.put("hi", JSONArray())
         return
     }
     val s = hi.first.coerceIn(0, vp.lastIndex)
     val e = hi.last.coerceIn(s, vp.lastIndex)
-    val slice = vp.subList(s, e + 1)
     root.put("hi", trackSliceArr(vp, s..e))
-    root.put("hiBounds", boundsPair(slice.map { LatLon(it.latitude, it.longitude) }))
-    root.put("hiKey", key)
+    var loLat = Double.MAX_VALUE; var hiLat = -Double.MAX_VALUE
+    var loLon = Double.MAX_VALUE; var hiLon = -Double.MAX_VALUE
+    for (i in s..e) {
+        val p = vp[i]
+        if (p.latitude < loLat) loLat = p.latitude
+        if (p.latitude > hiLat) hiLat = p.latitude
+        if (p.longitude < loLon) loLon = p.longitude
+        if (p.longitude > hiLon) hiLon = p.longitude
+    }
+    root.put("hiBounds", boundsPair(LatLon(loLat, loLon), LatLon(hiLat, hiLon)))
 }
 
 private fun loadTerrainHtml(ctx: Context, bgHex: String): String {

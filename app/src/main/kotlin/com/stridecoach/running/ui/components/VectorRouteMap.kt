@@ -21,7 +21,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.stridecoach.running.core.domain.engine.LatLon
-import com.stridecoach.running.core.domain.engine.PaceZoneClassifier
 import com.stridecoach.running.core.domain.engine.ReplayHead
 import com.stridecoach.running.core.domain.model.TrackPoint
 import com.stridecoach.running.ui.theme.KdeBg
@@ -54,11 +53,13 @@ import org.maplibre.android.style.layers.PropertyFactory.lineBlur
 import org.maplibre.android.style.layers.PropertyFactory.lineCap
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineDasharray
+import org.maplibre.android.style.layers.PropertyFactory.lineGradient
 import org.maplibre.android.style.layers.PropertyFactory.lineJoin
 import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
 import org.maplibre.android.style.layers.PropertyFactory.visibility
 import org.maplibre.android.style.layers.TransitionOptions
+import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.style.sources.RasterDemSource
 import org.maplibre.android.style.sources.TileSet
@@ -105,29 +106,18 @@ private class VectorMapHolder {
     var lastHiKey: String = ""
     var lastHiTrig: Int = -1
     var lastPreload: Boolean? = null
+    var lastPreloadKey: String = ""
     var lastPaceRenderKey: String = ""
     var lastPaceGeoPushMs: Long = 0L
+    var lastPaceOpacity: Float = -1f
     var lastBottomOccPx: Int = -1
     var lastHeadKey: String = ""
     var activeHiAnim: ValueAnimator? = null
     val mainHandler = Handler(Looper.getMainLooper())
     var pendingFadeRunnable: Runnable? = null
 
-    var cachedColorRuns: List<ColorChunk> = emptyList()
-    var cachedPtsRef: List<TrackPoint> = emptyList()
-    var cachedGeoHash: Int = 0
-    var cachedRefPace: Int = -1
-    var cachedSmoothGrad: Boolean = true
     var syncAction: (() -> Unit)? = null
 }
-
-internal data class ColorChunk(
-    val startIdx: Int,
-    val endIdx: Int,
-    val hex: String,
-    val coords: List<Point>,
-    val feature: Feature = Feature.fromGeometry(LineString.fromLngLats(coords)).apply { addStringProperty("col", hex) }
-)
 
 @Composable
 fun VectorRouteMap(
@@ -227,6 +217,9 @@ fun VectorRouteMap(
 
     val styleUri = resolveMapStyleUri(mapStyleMode, StrideThemeState.isLight)
     val bgArgb = KdeBg.toArgb()
+    val prep = remember(pts, refPaceSec, smoothGradient) { prepareRoute(pts, refPaceSec, smoothGradient) }
+    val validGuide = remember(guidePts) { guidePts.filter { isValidCoord(it.latitude, it.longitude) } }
+    val validWps = remember(plannerWaypoints) { plannerWaypoints.filter { isValidCoord(it.latitude, it.longitude) } }
 
     val mv = remember(ctx) {
         MapTileCacheManager.configureAmbientCache(ctx)
@@ -241,8 +234,8 @@ fun VectorRouteMap(
     holder.syncAction = {
         if (holder.styleReady && holder.map != null) {
             syncVectorScene(
-                ctx, holder, pts, replayHead, guidePts, plannerWaypoints, userLocation,
-                interactive, showHead, showUserDot, colorByPace, smoothGradient, refPaceSec,
+                ctx, holder, prep, replayHead, validGuide, validWps, userLocation,
+                interactive, showHead, showUserDot, colorByPace,
                 highlightRange, highlightTrigger, animateHighlight, trimStartIdx, trimEndIdx,
                 cameraMode, is3dMode, show3dBuildings, showTerrainHillshade, keepCenteredOnSheetDrag,
                 lockAutoFit, preloadTiles, styleUri, liveHeadingDeg, fallbackCenter,
@@ -331,7 +324,7 @@ fun VectorRouteMap(
                 holder.lastTrimKey = ""
                 holder.lastHiKey = ""
                 holder.lastPaceRenderKey = ""
-                holder.cachedGeoHash = 0
+                holder.lastPaceOpacity = -1f
                 holder.lastHeadKey = ""
                 ml.setStyle(Style.Builder().fromUri(styleUri)) { st ->
                     installVectorLayers(st)
@@ -345,8 +338,8 @@ fun VectorRouteMap(
                     ml.setPrefetchZoomDelta(if (preloadTiles) 4 else 0)
                 }
                 syncVectorScene(
-                    ctx, holder, pts, replayHead, guidePts, plannerWaypoints, userLocation,
-                    interactive, showHead, showUserDot, colorByPace, smoothGradient, refPaceSec,
+                    ctx, holder, prep, replayHead, validGuide, validWps, userLocation,
+                    interactive, showHead, showUserDot, colorByPace,
                     highlightRange, highlightTrigger, animateHighlight, trimStartIdx, trimEndIdx,
                     cameraMode, is3dMode, show3dBuildings, showTerrainHillshade, keepCenteredOnSheetDrag,
                     lockAutoFit, preloadTiles, styleUri, liveHeadingDeg, fallbackCenter,
@@ -399,8 +392,9 @@ private fun installTerrainAndBuildings(st: Style) {
 }
 
 private fun installRouteLineLayers(st: Style) {
-    val srcs = listOf("guide-src", "base-src", "pace-src", "active-src", "trim-src", "hi-src", "planner-pts-src", "user-loc-src", "head-src")
+    val srcs = listOf("guide-src", "base-src", "active-src", "trim-src", "hi-src", "planner-pts-src", "user-loc-src", "head-src")
     srcs.forEach { st.addSource(GeoJsonSource(it)) }
+    st.addSource(GeoJsonSource("pace-src", GeoJsonOptions().withLineMetrics(true)))
 
     st.addLayer(
         LineLayer("guide-layer", "guide-src").withProperties(
@@ -424,7 +418,7 @@ private fun installRouteLineLayers(st: Style) {
     )
     st.addLayer(
         LineLayer("pace-layer", "pace-src").withProperties(
-            lineColor(Expression.get("col")),
+            lineColor(Color.parseColor("#926EE4")),
             lineWidth(5.4f),
             lineCap(Property.LINE_CAP_ROUND),
             lineJoin(Property.LINE_JOIN_ROUND)
@@ -474,17 +468,15 @@ private fun baseLineLayer(id: String, src: String, hex: String, width: Float): L
 private fun syncVectorScene(
     ctx: android.content.Context,
     h: VectorMapHolder,
-    pts: List<TrackPoint>,
+    prep: PreparedRoute,
     head: ReplayHead?,
-    guidePts: List<LatLon>,
-    plannerWaypoints: List<LatLon>,
+    validGuide: List<LatLon>,
+    validWaypoints: List<LatLon>,
     userLoc: LatLon?,
     interactive: Boolean,
     showHead: Boolean,
     showUserDot: Boolean,
     colorByPace: Boolean,
-    smoothGradient: Boolean,
-    refPaceSec: Int,
     hiRange: IntRange?,
     hiTrigger: Int,
     animateHighlight: Boolean,
@@ -527,16 +519,14 @@ private fun syncVectorScene(
     }
     h.lastBottomOccPx = bottomOcclusionPx
 
-    val validPts = pts.filter { it.latitude in -85.0..85.0 && it.longitude in -179.9..179.9 }
-    val validGuide = guidePts.filter { it.latitude in -85.0..85.0 && it.longitude in -179.9..179.9 }
-    val validWaypoints = plannerWaypoints.filter { it.latitude in -85.0..85.0 && it.longitude in -179.9..179.9 }
-    val geoHash = computePtsGeoHash(validPts)
+    val validPts = prep.pts
+    val geoHash = prep.geoHash
 
     syncGuide(h, st, validGuide)
     syncPlannerWaypoints(h, st, validWaypoints)
     syncUserDot(h, st, userLoc, showUserDot)
     syncBase(h, st, validPts, geoHash)
-    syncActiveAndPace(h, st, validPts, geoHash, head, colorByPace, smoothGradient, refPaceSec)
+    syncActiveAndPace(h, st, prep, head, colorByPace)
     syncTrimSlices(h, st, validPts, trimStartIdx, trimEndIdx)
     syncHiSlice(ml, h, st, validPts, hiRange, hiTrigger, animateHighlight, is3dMode, effectiveTopPx, hiBottomOcclusionPx)
     syncHead(h, st, validPts, head, showHead)
@@ -545,7 +535,9 @@ private fun syncVectorScene(
         liveHeadingDeg, effectiveTopPx, bottomOcclusionPx, fitTopClearPx, fitBottomClearPx, fitSidePx, recenter
     )
 
-    if (preloadTiles) {
+    val preloadKey = "${geoHash}_$styleUri"
+    if (preloadTiles && preloadKey != h.lastPreloadKey) {
+        h.lastPreloadKey = preloadKey
         val seed = validPts.firstOrNull()?.let { LatLon(it.latitude, it.longitude) }
             ?: validGuide.firstOrNull()
             ?: userLoc
@@ -621,134 +613,77 @@ private fun syncBase(h: VectorMapHolder, st: Style, pts: List<TrackPoint>, geoHa
         FeatureCollection.fromFeatures(emptyArray())
     }
     st.getSourceAs<GeoJsonSource>("base-src")?.setGeoJson(fc)
+    st.getSourceAs<GeoJsonSource>("pace-src")?.setGeoJson(fc)
+    st.getSourceAs<GeoJsonSource>("active-src")?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
 }
 
 private fun syncActiveAndPace(
     h: VectorMapHolder,
     st: Style,
-    pts: List<TrackPoint>,
-    geoHash: Int,
+    prep: PreparedRoute,
     head: ReplayHead?,
-    colorByPace: Boolean,
-    smoothGrad: Boolean,
-    refPace: Int
+    colorByPace: Boolean
 ) {
-    val paceKey = "${geoHash}_${colorByPace}_${smoothGrad}_${refPace}_${head?.baseIdx}_${head?.let { "%.5f_%.5f".format(it.lat, it.lon) }}"
+    val layer = st.getLayerAs<LineLayer>("pace-layer") ?: return
+    val frac = headProgressFrac(prep, head)
+    if (prep.pts.size < 2 || frac <= 0.0005) {
+        if (h.lastPaceOpacity != 0f) {
+            h.lastPaceOpacity = 0f
+            layer.setProperties(lineOpacity(0f))
+        }
+        h.lastPaceRenderKey = "${prep.geoHash}_off"
+        return
+    }
+    if (h.lastPaceOpacity != 1f) {
+        h.lastPaceOpacity = 1f
+        layer.setProperties(lineOpacity(1f))
+    }
+    val qFrac = if (frac >= 0.999) 1000 else (frac * 400).toInt()
+    val stopSig = "${prep.stops.size}_${prep.stops.firstOrNull()?.hex}_${prep.stops.lastOrNull()?.hex}"
+    val paceKey = "${prep.geoHash}_${colorByPace}_${stopSig}_$qFrac"
     if (paceKey == h.lastPaceRenderKey) return
 
-    val paceSrc = st.getSourceAs<GeoJsonSource>("pace-src") ?: return
-    val actSrc = st.getSourceAs<GeoJsonSource>("active-src") ?: return
-    if (pts.size < 2) {
-        h.lastPaceRenderKey = paceKey
-        paceSrc.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-        actSrc.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-        return
-    }
-    if (!colorByPace) {
-        h.lastPaceRenderKey = paceKey
-        paceSrc.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-        val coords = buildActiveCoords(pts, head)
-        val fc = if (coords.size >= 2) {
-            FeatureCollection.fromFeature(Feature.fromGeometry(LineString.fromLngLats(coords)))
-        } else {
-            FeatureCollection.fromFeatures(emptyArray())
-        }
-        actSrc.setGeoJson(fc)
-        return
-    }
-
-    val ptsOrStyleChanged = h.cachedGeoHash != geoHash || h.cachedPtsRef !== pts || h.cachedRefPace != refPace || h.cachedSmoothGrad != smoothGrad
     val nowMs = android.os.SystemClock.uptimeMillis()
-    if (!ptsOrStyleChanged && head != null && nowMs - h.lastPaceGeoPushMs < 45L && h.lastPaceRenderKey.isNotEmpty()) {
-        return
-    }
+    if (head != null && qFrac < 1000 && nowMs - h.lastPaceGeoPushMs < 48L && h.lastPaceRenderKey.isNotEmpty()) return
     h.lastPaceRenderKey = paceKey
     h.lastPaceGeoPushMs = nowMs
+    layer.setProperties(lineGradient(buildPaceGradientExpr(prep.stops, frac, colorByPace)))
+}
 
-    actSrc.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-    if (ptsOrStyleChanged) {
-        h.cachedGeoHash = geoHash
-        h.cachedPtsRef = pts
-        h.cachedRefPace = refPace
-        h.cachedSmoothGrad = smoothGrad
-        h.cachedColorRuns = buildColorChunks(pts, refPace, smoothGrad)
+private fun buildPaceGradientExpr(stops: List<PaceStop>, frac: Double, colorByPace: Boolean): Expression {
+    if (!colorByPace || stops.isEmpty()) {
+        val purple = Expression.color(Color.parseColor("#926EE4"))
+        if (frac >= 0.999) return Expression.interpolate(Expression.linear(), Expression.lineProgress(), Expression.stop(0.0, purple), Expression.stop(1.0, purple))
+        val end = frac.coerceIn(0.002, 0.9988)
+        return Expression.interpolate(
+            Expression.linear(),
+            Expression.lineProgress(),
+            Expression.stop(0.0, purple),
+            Expression.stop(end, purple),
+            Expression.stop((end + 0.0006).coerceAtMost(1.0), Expression.rgba(0, 0, 0, 0))
+        )
     }
-    val feats = sliceChunksToHead(h.cachedColorRuns, pts, head)
-    paceSrc.setGeoJson(FeatureCollection.fromFeatures(feats))
-}
-
-internal fun buildActiveCoords(pts: List<TrackPoint>, head: ReplayHead?): List<Point> {
-    if (head == null) return pts.map { Point.fromLngLat(it.longitude, it.latitude) }
-    val lim = head.baseIdx.coerceIn(0, pts.lastIndex)
-    val list = ArrayList<Point>(lim + 2)
-    for (i in 0..lim) list.add(Point.fromLngLat(pts[i].longitude, pts[i].latitude))
-    list.add(Point.fromLngLat(head.lon, head.lat))
-    return list
-}
-
-internal fun buildColorChunks(pts: List<TrackPoint>, refPace: Int, smoothGrad: Boolean): List<ColorChunk> {
-    val smoothedSpeeds = FloatArray(pts.size) { i ->
-        val lo = (i - 2).coerceAtLeast(0)
-        val hi = (i + 2).coerceAtMost(pts.lastIndex)
-        var sum = 0f
-        var cnt = 0
-        for (k in lo..hi) {
-            val v = pts[k].speedMps ?: continue
-            sum += v
-            cnt++
+    val exprStops = ArrayList<Expression.Stop>(stops.size + 3)
+    if (frac >= 0.999) {
+        for (s in stops) exprStops.add(Expression.stop(s.frac, Expression.color(Color.parseColor(s.hex))))
+        if (stops.last().frac < 0.9999) exprStops.add(Expression.stop(1.0, Expression.color(Color.parseColor(stops.last().hex))))
+        return Expression.interpolate(Expression.linear(), Expression.lineProgress(), *exprStops.toTypedArray())
+    }
+    val fEnd = frac.coerceIn(0.002, 0.9988)
+    var prevT = -1.0
+    var tailHex = stops[0].hex
+    for (s in stops) {
+        if (s.frac >= fEnd - 0.0005) break
+        if (s.frac > prevT + 0.0001) {
+            exprStops.add(Expression.stop(s.frac, Expression.color(Color.parseColor(s.hex))))
+            prevT = s.frac
         }
-        if (cnt > 0) sum / cnt else (pts[i].speedMps ?: 0f)
+        tailHex = s.hex
     }
-
-    val out = mutableListOf<ColorChunk>()
-    var start = 0
-    var col = hexForSpeed(smoothedSpeeds[0], refPace, smoothGrad)
-    for (i in 1 until pts.size) {
-        val next = hexForSpeed(smoothedSpeeds[i], refPace, smoothGrad)
-        if (next != col || i == pts.lastIndex) {
-            val end = if (next != col) i else pts.lastIndex
-            val coords = (start..end).map { k -> Point.fromLngLat(pts[k].longitude, pts[k].latitude) }
-            out.add(ColorChunk(start, end, col, coords))
-            start = i
-            col = next
-        }
-    }
-    return out
-}
-
-private fun hexForSpeed(spd: Float, refPace: Int, smoothGrad: Boolean): String {
-    if (!smoothGrad) return PaceZoneClassifier.classifySpeed(spd, refPace)?.hex ?: "#9BA3AC"
-    val hex = PaceZoneClassifier.smoothPaceHex(spd, refPace)
-    val c = runCatching { Color.parseColor(hex) }.getOrNull() ?: return hex
-    val r = Color.red(c) and 0xF0
-    val g = Color.green(c) and 0xF0
-    val b = Color.blue(c) and 0xF0
-    return "#%02X%02X%02X".format(r, g, b)
-}
-
-internal fun sliceChunksToHead(
-    chunks: List<ColorChunk>,
-    pts: List<TrackPoint>,
-    head: ReplayHead?
-): List<Feature> {
-    if (head == null) return chunks.map { it.feature }
-    val lim = head.baseIdx.coerceIn(0, pts.lastIndex)
-    val feats = ArrayList<Feature>(chunks.size)
-    for (ch in chunks) {
-        if (ch.startIdx > lim) break
-        if (ch.endIdx <= lim) {
-            feats.add(ch.feature)
-        } else {
-            val part = ArrayList<Point>(lim - ch.startIdx + 2)
-            for (i in ch.startIdx..lim) part.add(Point.fromLngLat(pts[i].longitude, pts[i].latitude))
-            part.add(Point.fromLngLat(head.lon, head.lat))
-            if (part.size >= 2) {
-                feats.add(Feature.fromGeometry(LineString.fromLngLats(part)).apply { addStringProperty("col", ch.hex) })
-            }
-            break
-        }
-    }
-    return feats
+    if (prevT < 0.0) exprStops.add(Expression.stop(0.0, Expression.color(Color.parseColor(stops[0].hex))))
+    exprStops.add(Expression.stop(fEnd, Expression.color(Color.parseColor(tailHex))))
+    exprStops.add(Expression.stop((fEnd + 0.0006).coerceAtMost(1.0), Expression.rgba(0, 0, 0, 0)))
+    return Expression.interpolate(Expression.linear(), Expression.lineProgress(), *exprStops.toTypedArray())
 }
 
 private fun syncTrimSlices(

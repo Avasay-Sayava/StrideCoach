@@ -186,19 +186,26 @@ fun RunDetailMapScreen(
     LaunchedEffect(run.encodedPolyline, run.isSnapped) { hiRange = null }
 
     val totalMs = pts.lastOrNull()?.elapsedMillis?.coerceAtLeast(1_000L) ?: run.durationMillis.coerceAtLeast(1_000L)
+    val liveIs3d = rememberUpdatedState(is3d)
     LaunchedEffect(playing, run.id, totalMs) {
         if (!playing) return@LaunchedEffect
         var prevNs = withFrameNanos { it }
+        var curProg = prog
+        var wallMs = 0f
         while (playing) {
             val nowNs = withFrameNanos { it }
             val dtMs = ((nowNs - prevNs).coerceIn(0L, 100_000_000L)) / 1_000_000f
             prevNs = nowNs
-            val next = prog + ((dtMs * liveMult.value) / totalMs.toFloat())
+            wallMs += dtMs
+            val next = curProg + ((dtMs * liveMult.value) / totalMs.toFloat())
+            curProg = next
+            val minStepMs = if (liveIs3d.value) 32f else 16f
             if (next >= 1f) {
                 prog = 1f
                 playing = false
-            } else {
+            } else if (wallMs >= minStepMs) {
                 prog = next
+                wallMs = 0f
             }
         }
     }
@@ -223,7 +230,8 @@ fun RunDetailMapScreen(
     val scope = rememberCoroutineScope()
     val sheetOffsetPx = runCatching { scaffoldState.bottomSheetState.requireOffset() }.getOrNull()
     val bottomOcclusionPx = if (sheetOffsetPx != null && containerHeightPx > 0) {
-        (containerHeightPx - sheetOffsetPx).roundToInt().coerceIn(0, (containerHeightPx * 0.72f).toInt())
+        val raw = (containerHeightPx - sheetOffsetPx).roundToInt().coerceIn(0, (containerHeightPx * 0.72f).toInt())
+        (raw / 8) * 8
     } else 0
 
     BottomSheetScaffold(
