@@ -594,7 +594,7 @@
 
     state.routeLayer = createRoute3dLayer();
     if (!map.getLayer('sc-route-3d')) {
-      if (firstSym) map.addLayer(state.routeLayer, firstSym); else map.addLayer(state.routeLayer);
+      if (firstAreaSym) map.addLayer(state.routeLayer, firstAreaSym); else map.addLayer(state.routeLayer);
     }
 
     var thresh = computeBuildingOccThreshold(map);
@@ -615,7 +615,7 @@
           'fill-extrusion-opacity': 1.0
         }
       };
-      if (firstSym) map.addLayer(lowDef, firstSym); else map.addLayer(lowDef);
+      if (firstAreaSym) map.addLayer(lowDef, firstAreaSym); else map.addLayer(lowDef);
     }
 
     state.headLayer = createHead3dLayer('core');
@@ -747,7 +747,7 @@
     }, 36);
   }
 
-  function computeFitCamera(bounds, w, h, padT, padB, padS, pitchDeg) {
+  function computeFitCamera(bounds, w, h, padT, padB, padS, pitchDeg, coords) {
     var minLon = bounds[0][0], minLat = bounds[0][1];
     var maxLon = bounds[1][0], maxLat = bounds[1][1];
     function mercX(lon) { return (lon + 180.0) / 360.0; }
@@ -758,15 +758,48 @@
     function invMercY(y) {
       return (2.0 * Math.atan(Math.exp((180.0 - 360.0 * y) * Math.PI / 180.0)) - Math.PI / 2.0) * 180.0 / Math.PI;
     }
+    var yTop = mercY(maxLat), yBot = mercY(minLat);
+    var dy = Math.max(1e-6, yBot - yTop);
     var dx = Math.max(1e-6, mercX(maxLon) - mercX(minLon));
-    var dy = Math.max(1e-6, mercY(minLat) - mercY(maxLat));
+    var centerLon = (minLon + maxLon) / 2.0;
+    if (pitchDeg > 5 && coords && coords.length >= 2) {
+      var k = 0.28 * Math.sin(pitchDeg * Math.PI / 180.0);
+      var yMid = (yTop + yBot) / 2.0;
+      var halfY = Math.max(1e-7, dy * 0.5);
+      var ptsM = [];
+      for (var i = 0; i < coords.length; i++) {
+        var v = (mercY(coords[i][1]) - yMid) / halfY;
+        var sc = 1.0 / (1.0 - k * Math.max(-1.0, Math.min(1.0, v)));
+        ptsM.push([mercX(coords[i][0]), sc]);
+      }
+      var lo = mercX(minLon), hi = mercX(maxLon);
+      for (var step = 0; step < 10; step++) {
+        var mid = (lo + hi) * 0.5;
+        var minPx = Infinity, maxPx = -Infinity;
+        for (var j = 0; j < ptsM.length; j++) {
+          var px = (ptsM[j][0] - mid) * ptsM[j][1];
+          if (px < minPx) minPx = px;
+          if (px > maxPx) maxPx = px;
+        }
+        if (minPx + maxPx > 0) lo = mid; else hi = mid;
+      }
+      var bestMid = (lo + hi) * 0.5;
+      centerLon = bestMid * 360.0 - 180.0;
+      var finalMin = Infinity, finalMax = -Infinity;
+      for (var m = 0; m < ptsM.length; m++) {
+        var pxf = (ptsM[m][0] - bestMid) * ptsM[m][1];
+        if (pxf < finalMin) finalMin = pxf;
+        if (pxf > finalMax) finalMax = pxf;
+      }
+      dx = Math.max(dx, finalMax - finalMin);
+    }
     var availW = Math.max(60, w - padS * 2);
     var availH = Math.max(60, h - padT - padB);
     var pitchCos = pitchDeg > 5 ? Math.cos(pitchDeg * Math.PI / 180.0) : 1.0;
     var effDy = dy * Math.max(0.74, pitchCos * 1.12);
     var zoom = Math.max(1.0, Math.min(Math.log2(availW / (512.0 * dx)), Math.log2(availH / (512.0 * effDy)), 16.2));
     return {
-      center: [(minLon + maxLon) / 2.0, invMercY((mercY(minLat) + mercY(maxLat)) / 2.0)],
+      center: [centerLon, invMercY((yTop + yBot) / 2.0)],
       zoom: zoom,
       pitch: pitchDeg,
       bearing: 0,
@@ -859,7 +892,7 @@
         var hTop = Math.min(Math.round(p.fitTopClearCss + 12), Math.round(el.clientHeight * 0.36));
         var hBot = Math.min(Math.round((p.hiBotCss || p.fitBotClearCss) + 12), Math.round(el.clientHeight * 0.56));
         var hSide = Math.min(Math.round(p.fitSideCss + 12), Math.round(el.clientWidth * 0.22));
-        var hOpts = computeFitCamera(p.hiBounds, el.clientWidth, el.clientHeight, hTop, hBot, hSide, 46);
+        var hOpts = computeFitCamera(p.hiBounds, el.clientWidth, el.clientHeight, hTop, hBot, hSide, 46, p.hi);
         hOpts.duration = 520;
         map.easeTo(hOpts);
       }
@@ -1023,7 +1056,7 @@
         state.hasCameraInit = true;
         state.lastFreeInit = true;
         var fitOpts = s.bounds
-          ? computeFitCamera(s.bounds, el.clientWidth, el.clientHeight, safeTop, safeBot, safeSide, 48)
+          ? computeFitCamera(s.bounds, el.clientWidth, el.clientHeight, safeTop, safeBot, safeSide, 48, state.cachedBase)
           : { center: f.userLoc || s.fallback, zoom: 15.6, pitch: 48, bearing: 0, padding: { top: topPad, bottom: botPad, left: 0, right: 0 } };
         if (animateFit) {
           state.easeUntilMs = Date.now() + 480;

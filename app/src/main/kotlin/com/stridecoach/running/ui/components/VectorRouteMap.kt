@@ -58,6 +58,7 @@ import org.maplibre.android.style.layers.PropertyFactory.lineJoin
 import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
 import org.maplibre.android.style.layers.PropertyFactory.visibility
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.TransitionOptions
 import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
@@ -422,22 +423,40 @@ private fun installTerrainAndBuildings(st: Style) {
     if (st.getLayer("water_name") != null) st.addLayerBelow(bld, "water_name") else st.addLayer(bld)
 }
 
+private val AREA_LABEL_REGEX = Regex(
+    "(^place_|^water_|park|city|town|village|suburb|state|country|continent|ocean|sea|lake|region|area|district|neighborhood|landuse|natural)",
+    RegexOption.IGNORE_CASE
+)
+
+private fun isAreaLabelLayerId(id: String): Boolean = AREA_LABEL_REGEX.containsMatchIn(id)
+
+private fun findFirstAreaSymbolId(st: Style): String? =
+    st.layers.firstOrNull { it is SymbolLayer && isAreaLabelLayerId(it.id) }?.id
+
+private fun addRouteLayer(st: Style, layer: LineLayer, belowId: String?) {
+    if (belowId != null) st.addLayerBelow(layer, belowId) else st.addLayer(layer)
+}
+
 private fun installRouteLineLayers(st: Style) {
     val srcs = listOf("guide-src", "base-src", "active-src", "trim-src", "hi-src", "planner-pts-src", "user-loc-src", "head-src")
     srcs.forEach { st.addSource(GeoJsonSource(it)) }
     st.addSource(GeoJsonSource("pace-src", GeoJsonOptions().withLineMetrics(true)))
 
-    st.addLayer(
+    val firstAreaSym = findFirstAreaSymbolId(st)
+    addRouteLayer(
+        st,
         LineLayer("guide-layer", "guide-src").withProperties(
             lineColor(Color.parseColor("#3DAEE9")),
             lineWidth(3.6f),
             lineDasharray(arrayOf(2.2f, 1.8f)),
             lineCap(Property.LINE_CAP_ROUND),
             lineJoin(Property.LINE_JOIN_ROUND)
-        )
+        ),
+        firstAreaSym
     )
-    st.addLayer(baseLineLayer("base-layer", "base-src", "#473C69", 4.0f))
-    st.addLayer(
+    addRouteLayer(st, baseLineLayer("base-layer", "base-src", "#473C69", 4.0f), firstAreaSym)
+    addRouteLayer(
+        st,
         LineLayer("hi-layer", "hi-src").withProperties(
             lineColor(Color.parseColor("#256F96")),
             lineWidth(10.5f),
@@ -445,18 +464,21 @@ private fun installRouteLineLayers(st: Style) {
             lineBlur(0.0f),
             lineCap(Property.LINE_CAP_ROUND),
             lineJoin(Property.LINE_JOIN_ROUND)
-        )
+        ),
+        firstAreaSym
     )
-    st.addLayer(
+    addRouteLayer(
+        st,
         LineLayer("pace-layer", "pace-src").withProperties(
             lineColor(Color.parseColor("#926EE4")),
             lineWidth(5.4f),
             lineCap(Property.LINE_CAP_BUTT),
             lineJoin(Property.LINE_JOIN_ROUND)
-        )
+        ),
+        firstAreaSym
     )
-    st.addLayer(baseLineLayer("active-layer", "active-src", "#926EE4", 5.5f))
-    st.addLayer(baseLineLayer("trim-layer", "trim-src", "#F87171", 5.4f))
+    addRouteLayer(st, baseLineLayer("active-layer", "active-src", "#926EE4", 5.5f), firstAreaSym)
+    addRouteLayer(st, baseLineLayer("trim-layer", "trim-src", "#F87171", 5.4f), firstAreaSym)
 }
 
 private fun installMarkerLayers(st: Style) {
