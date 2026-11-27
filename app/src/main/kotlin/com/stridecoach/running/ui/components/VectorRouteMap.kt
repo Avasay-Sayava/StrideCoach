@@ -430,8 +430,16 @@ private val AREA_LABEL_REGEX = Regex(
 
 private fun isAreaLabelLayerId(id: String): Boolean = AREA_LABEL_REGEX.containsMatchIn(id)
 
-private fun findFirstAreaSymbolId(st: Style): String? =
-    st.layers.firstOrNull { it is SymbolLayer && isAreaLabelLayerId(it.id) }?.id
+private fun findFirstAreaSymbolId(st: Style): String? {
+    val layers = st.layers
+    val lastNonAreaIdx = layers.indexOfLast {
+        (it is LineLayer && !it.id.startsWith("boundary")) ||
+            (it is SymbolLayer && !isAreaLabelLayerId(it.id))
+    }
+    return layers.drop((lastNonAreaIdx + 1).coerceAtLeast(0))
+        .firstOrNull { it is SymbolLayer && isAreaLabelLayerId(it.id) }
+        ?.id
+}
 
 private fun addRouteLayer(st: Style, layer: LineLayer, belowId: String?) {
     if (belowId != null) st.addLayerBelow(layer, belowId) else st.addLayer(layer)
