@@ -195,18 +195,7 @@ class StrideCoachViewModel(
             }
         }
         viewModelScope.launch {
-            TrackingSessionBus.completedRuns.collect { run ->
-                val curPrefs = prefs.preferences.first()
-                val finalized = if (curPrefs.autoTrimRunsEnabled) {
-                    val sug = trimmer.suggestAutoTrim(run.trackPoints, run.activityKind)
-                    if (sug != null) trimmer.trimRange(run, sug.startMs, sug.endMs) else run
-                } else {
-                    run
-                }
-                repo.saveRun(finalized)
-                val trimTag = if (finalized.durationMillis < run.durationMillis) " (auto-trimmed idle ends)" else ""
-                postBanner("Saved ${finalized.name}: ${"%.2f".format(finalized.km())} km$trimTag")
-            }
+            TrackingSessionBus.completedRuns.collect { saveCompletedRun(it) }
         }
         viewModelScope.launch {
             prefs.preferences.collect { p ->
@@ -385,18 +374,29 @@ class StrideCoachViewModel(
         viewModelScope.launch {
             topoBusyFlow.value = true
             runCatching { ElevationDemService.enrichRunElevation(cur, pts) }
-                .onSuccess { enriched ->
-                    if (enriched != null) {
-                        repo.saveRun(enriched)
-                        if (selFlow.value?.id == enriched.id) selFlow.value = enriched
-                        if (!silent) postBanner("Loaded DEM elevation (+${enriched.elevGainM}m / -${enriched.elevLossM}m).")
-                    } else if (!silent) {
-                        postBanner("Elevation lookup unavailable for this route.")
-                    }
-                }
+                .onSuccess { applyDemResult(it, silent) }
                 .onFailure { if (!silent) postBanner("Elevation fetch failed: check connection.") }
             topoBusyFlow.value = false
         }
+    }
+
+    private suspend fun saveCompletedRun(run: RunRecord) {
+        val p = prefs.preferences.first()
+        val sug = if (p.autoTrimRunsEnabled) trimmer.suggestAutoTrim(run.trackPoints, run.activityKind) else null
+        val out = if (sug != null) trimmer.trimRange(run, sug.startMs, sug.endMs) else run
+        repo.saveRun(out)
+        val tag = if (out.durationMillis < run.durationMillis) " (auto-trimmed idle ends)" else ""
+        postBanner("Saved ${out.name}: ${"%.2f".format(out.km())} km$tag")
+    }
+
+    private suspend fun applyDemResult(enriched: RunRecord?, silent: Boolean) {
+        if (enriched == null) {
+            if (!silent) postBanner("Elevation lookup unavailable for this route.")
+            return
+        }
+        repo.saveRun(enriched)
+        if (selFlow.value?.id == enriched.id) selFlow.value = enriched
+        if (!silent) postBanner("Loaded DEM elevation (+${enriched.elevGainM}m / -${enriched.elevLossM}m).")
     }
 
     fun clearSelectedRun() {
@@ -672,23 +672,30 @@ class StrideCoachViewModel(
 
     fun importAutoDetectedUri(cr: ContentResolver, uri: Uri) {
         viewModelScope.launch {
-            val kind = withContext(Dispatchers.IO) { peekKind(cr, uri) }
-            when (kind) {
-                ImportFileKind.RUNNING_TRACKER_BACKUP -> runImportTask("Backup import") {
-                    val runs = withContext(Dispatchers.IO) { readBackup(cr, uri) }
-                    withContext(Dispatchers.IO) { repo.saveRuns(runs) }
-                    "Imported ${runs.size} runs."
-                }
-                ImportFileKind.GOOGLE_TIMELINE -> runImportTask("Timeline import") {
-                    val res = withContext(Dispatchers.IO) { readTimeline(cr, uri) }
-                    withContext(Dispatchers.IO) {
-                        repo.mergeWalkLogs(res.walkLogs)
-                        repo.saveRunsDeduplicated(res.activityRecords)
-                    }
-                    "Timeline: ${res.walkLogs.size} walk days & ${res.activityRecords.size} activities."
-                }
+            when (withContext(Dispatchers.IO) { peekKind(cr, uri) }) {
+                ImportFileKind.RUNNING_TRACKER_BACKUP -> importBackupSimple(cr, uri)
+                ImportFileKind.GOOGLE_TIMELINE -> importTimelineSimple(cr, uri)
                 ImportFileKind.UNKNOWN -> postBanner("Unrecognized file format. Choose a .backup or Timeline.json file.")
             }
+        }
+    }
+
+    private fun importBackupSimple(cr: ContentResolver, uri: Uri) {
+        runImportTask("Backup import") {
+            val runs = withContext(Dispatchers.IO) { readBackup(cr, uri) }
+            withContext(Dispatchers.IO) { repo.saveRuns(runs) }
+            "Imported ${runs.size} runs."
+        }
+    }
+
+    private fun importTimelineSimple(cr: ContentResolver, uri: Uri) {
+        runImportTask("Timeline import") {
+            val res = withContext(Dispatchers.IO) { readTimeline(cr, uri) }
+            withContext(Dispatchers.IO) {
+                repo.mergeWalkLogs(res.walkLogs)
+                repo.saveRunsDeduplicated(res.activityRecords)
+            }
+            "Timeline: ${res.walkLogs.size} walk days & ${res.activityRecords.size} activities."
         }
     }
 

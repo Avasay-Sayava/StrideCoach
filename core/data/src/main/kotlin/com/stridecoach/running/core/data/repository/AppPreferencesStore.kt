@@ -1,12 +1,13 @@
 package com.stridecoach.running.core.data.repository
 
 import android.content.Context
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.booleanPreferencesKey as bKey
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.intPreferencesKey
-import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey as iKey
+import androidx.datastore.preferences.core.longPreferencesKey as lKey
+import androidx.datastore.preferences.core.stringPreferencesKey as sKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -55,139 +56,84 @@ data class CoachPreferences(
     val lastTimelineFileModMillis: Long = 0L
 )
 
+private object PrefKeys {
+    val v = bKey("v"); val h = bKey("h"); val w = bKey("w"); val p = bKey("p")
+    val s = iKey("s"); val l = iKey("l"); val hc = bKey("hc"); val ad = bKey("ad")
+    val has = bKey("has"); val lhs = lKey("lhs"); val asr = bKey("asr"); val atr = bKey("atr")
+    val gyr = bKey("gyr"); val m3d = bKey("m3d"); val th = sKey("theme"); val acc = sKey("accent")
+    val mst = sKey("mstyle"); val attr = bKey("attr"); val bld = bKey("bld3d"); val hil = bKey("hills")
+    val mesh = bKey("mesh3d"); val tex = iKey("terexag"); val shc = bKey("shctr"); val hia = bKey("hianim")
+    val smg = bKey("smgrad"); val udot = bKey("udot"); val pret = bKey("pretile"); val slp = bKey("slppe")
+    val hud = bKey("tophud"); val spk = bKey("spdkmh"); val bsm = sKey("basemode"); val fin = bKey("compfin")
+    val pkl = bKey("pklock"); val wtg = bKey("wtgrd"); val fas = bKey("fsync"); val dem = bKey("autodem")
+    val furi = sKey("furi"); val lfs = lKey("lfs"); val ltf = lKey("ltf")
+}
+
 class AppPreferencesStore(private val ctx: Context) {
-    private val kV = booleanPreferencesKey("v")
-    private val kH = booleanPreferencesKey("h")
-    private val kW = booleanPreferencesKey("w")
-    private val kP = booleanPreferencesKey("p")
-    private val kS = intPreferencesKey("s")
-    private val kL = intPreferencesKey("l")
-    private val kHc = booleanPreferencesKey("hc")
-    private val kAd = booleanPreferencesKey("ad")
-    private val kHas = booleanPreferencesKey("has")
-    private val kLhs = longPreferencesKey("lhs")
-    private val kAsr = booleanPreferencesKey("asr")
-    private val kAtr = booleanPreferencesKey("atr")
-    private val kGyr = booleanPreferencesKey("gyr")
-    private val kM3d = booleanPreferencesKey("m3d")
-
-    private val kTh = stringPreferencesKey("theme")
-    private val kAcc = stringPreferencesKey("accent")
-    private val kMst = stringPreferencesKey("mstyle")
-    private val kAttr = booleanPreferencesKey("attr")
-    private val kBld = booleanPreferencesKey("bld3d")
-    private val kHil = booleanPreferencesKey("hills")
-    private val kMesh = booleanPreferencesKey("mesh3d")
-    private val kTexag = intPreferencesKey("terexag")
-    private val kShc = booleanPreferencesKey("shctr")
-    private val kHia = booleanPreferencesKey("hianim")
-    private val kSmg = booleanPreferencesKey("smgrad")
-    private val kUdot = booleanPreferencesKey("udot")
-    private val kPret = booleanPreferencesKey("pretile")
-    private val kSlp = booleanPreferencesKey("slppe")
-    private val kHud = booleanPreferencesKey("tophud")
-    private val kSpk = booleanPreferencesKey("spdkmh")
-    private val kBsm = stringPreferencesKey("basemode")
-    private val kFin = booleanPreferencesKey("compfin")
-    private val kPkl = booleanPreferencesKey("pklock")
-    private val kWtg = booleanPreferencesKey("wtgrd")
-    private val kFas = booleanPreferencesKey("fsync")
-    private val kDem = booleanPreferencesKey("autodem")
-    private val kFuri = stringPreferencesKey("furi")
-    private val kLfs = longPreferencesKey("lfs")
-    private val kLtf = longPreferencesKey("ltf")
-
     val preferences: Flow<CoachPreferences> = ctx.prefsStore.data.map(::read)
 
     suspend fun update(fn: (CoachPreferences) -> CoachPreferences) {
-        ctx.prefsStore.edit { map ->
-            val cur = read(map)
+        ctx.prefsStore.edit { m ->
+            val cur = read(m)
             val nxt = fn(cur)
             if (nxt == cur) return@edit
-            map[kV] = nxt.voiceCoachEnabled
-            map[kH] = nxt.hapticCuesEnabled
-            map[kW] = nxt.keepScreenAwake
-            map[kP] = nxt.autoPauseEnabled
-            map[kS] = nxt.autoFinishStopSeconds.coerceIn(30, 900)
-            map[kL] = nxt.stepLengthCm.coerceIn(40, 120)
-            map[kHc] = nxt.healthConnectEnabled
-            map[kAd] = nxt.autoDetectRunsEnabled
-            map[kHas] = nxt.healthAutoSyncEnabled
-            map[kLhs] = nxt.lastHealthSyncMillis
-            map[kAsr] = nxt.autoStartOnRunDetected
-            map[kAtr] = nxt.autoTrimRunsEnabled
-            map[kGyr] = nxt.gyroTelemetryEnabled
-            map[kM3d] = nxt.defaultMap3dEnabled
-
-            map[kTh] = nxt.themeMode
-            map[kAcc] = nxt.accentName
-            map[kMst] = nxt.mapStyleMode
-            map[kAttr] = nxt.showMapAttribution
-            map[kBld] = nxt.show3dBuildings
-            map[kHil] = nxt.showTerrainHillshade
-            map[kMesh] = nxt.physical3dTerrainMesh
-            map[kTexag] = nxt.terrainExaggerationTenths.coerceIn(10, 40)
-            map[kShc] = nxt.keepMapCenteredOnSheetDrag
-            map[kHia] = nxt.animateSectionHighlight
-            map[kSmg] = nxt.smoothTrackGradient
-            map[kUdot] = nxt.showUserLocationDot
-            map[kPret] = nxt.preloadNearbyTiles
-            map[kSlp] = nxt.slopeAdjustedPaceEnabled
-            map[kHud] = nxt.showTopMapHud
-            map[kSpk] = nxt.showSpeedKmh
-            map[kBsm] = nxt.paceBaselineMode
-            map[kFin] = nxt.showCompetitionFinale
-            map[kPkl] = nxt.autoPocketLockOnStart
-            map[kWtg] = nxt.widgetTapGuardEnabled
-            map[kFas] = nxt.folderAutoSyncEnabled
-            map[kDem] = nxt.autoFetchDemElevation
-            map[kFuri] = nxt.syncFolderUri
-            map[kLfs] = nxt.lastFolderSyncMillis
-            map[kLtf] = nxt.lastTimelineFileModMillis
+            writeRun(m, nxt)
+            writeMap(m, nxt)
+            writeSync(m, nxt)
         }
     }
 
-    private fun read(p: Preferences): CoachPreferences {
-        return CoachPreferences(
-            voiceCoachEnabled = p[kV] ?: true,
-            hapticCuesEnabled = p[kH] ?: true,
-            keepScreenAwake = p[kW] ?: false,
-            autoPauseEnabled = p[kP] ?: true,
-            autoFinishStopSeconds = p[kS] ?: 180,
-            stepLengthCm = p[kL] ?: 74,
-            healthConnectEnabled = p[kHc] ?: false,
-            autoDetectRunsEnabled = p[kAd] ?: true,
-            healthAutoSyncEnabled = p[kHas] ?: true,
-            lastHealthSyncMillis = p[kLhs] ?: 0L,
-            autoStartOnRunDetected = p[kAsr] ?: false,
-            autoTrimRunsEnabled = p[kAtr] ?: true,
-            gyroTelemetryEnabled = p[kGyr] ?: true,
-            defaultMap3dEnabled = p[kM3d] ?: false,
-            themeMode = p[kTh] ?: "DARK",
-            accentName = p[kAcc] ?: "KDE_PURPLE",
-            mapStyleMode = p[kMst] ?: "MATCH_THEME",
-            showMapAttribution = p[kAttr] ?: true,
-            show3dBuildings = p[kBld] ?: true,
-            showTerrainHillshade = p[kHil] ?: true,
-            physical3dTerrainMesh = p[kMesh] ?: true,
-            terrainExaggerationTenths = (p[kTexag] ?: 22).coerceIn(10, 40),
-            keepMapCenteredOnSheetDrag = p[kShc] ?: true,
-            animateSectionHighlight = p[kHia] ?: true,
-            smoothTrackGradient = p[kSmg] ?: true,
-            showUserLocationDot = p[kUdot] ?: true,
-            preloadNearbyTiles = p[kPret] ?: true,
-            slopeAdjustedPaceEnabled = p[kSlp] ?: true,
-            showTopMapHud = p[kHud] ?: true,
-            showSpeedKmh = p[kSpk] ?: true,
-            paceBaselineMode = p[kBsm] ?: "CURRENT_FITNESS",
-            showCompetitionFinale = p[kFin] ?: true,
-            autoPocketLockOnStart = p[kPkl] ?: false,
-            widgetTapGuardEnabled = p[kWtg] ?: true,
-            folderAutoSyncEnabled = p[kFas] ?: true,
-            autoFetchDemElevation = p[kDem] ?: true,
-            syncFolderUri = p[kFuri] ?: "",
-            lastFolderSyncMillis = p[kLfs] ?: 0L,
-            lastTimelineFileModMillis = p[kLtf] ?: 0L
-        )
+    private fun writeRun(m: MutablePreferences, n: CoachPreferences) {
+        m[PrefKeys.v] = n.voiceCoachEnabled; m[PrefKeys.h] = n.hapticCuesEnabled
+        m[PrefKeys.w] = n.keepScreenAwake; m[PrefKeys.p] = n.autoPauseEnabled
+        m[PrefKeys.s] = n.autoFinishStopSeconds.coerceIn(30, 900)
+        m[PrefKeys.l] = n.stepLengthCm.coerceIn(40, 120)
+        m[PrefKeys.asr] = n.autoStartOnRunDetected; m[PrefKeys.atr] = n.autoTrimRunsEnabled
+        m[PrefKeys.gyr] = n.gyroTelemetryEnabled; m[PrefKeys.slp] = n.slopeAdjustedPaceEnabled
+        m[PrefKeys.bsm] = n.paceBaselineMode; m[PrefKeys.fin] = n.showCompetitionFinale
+        m[PrefKeys.pkl] = n.autoPocketLockOnStart; m[PrefKeys.wtg] = n.widgetTapGuardEnabled
     }
+
+    private fun writeMap(m: MutablePreferences, n: CoachPreferences) {
+        m[PrefKeys.m3d] = n.defaultMap3dEnabled; m[PrefKeys.th] = n.themeMode
+        m[PrefKeys.acc] = n.accentName; m[PrefKeys.mst] = n.mapStyleMode
+        m[PrefKeys.attr] = n.showMapAttribution; m[PrefKeys.bld] = n.show3dBuildings
+        m[PrefKeys.hil] = n.showTerrainHillshade; m[PrefKeys.mesh] = n.physical3dTerrainMesh
+        m[PrefKeys.tex] = n.terrainExaggerationTenths.coerceIn(10, 40)
+        m[PrefKeys.shc] = n.keepMapCenteredOnSheetDrag; m[PrefKeys.hia] = n.animateSectionHighlight
+        m[PrefKeys.smg] = n.smoothTrackGradient; m[PrefKeys.udot] = n.showUserLocationDot
+        m[PrefKeys.pret] = n.preloadNearbyTiles; m[PrefKeys.hud] = n.showTopMapHud
+        m[PrefKeys.spk] = n.showSpeedKmh
+    }
+
+    private fun writeSync(m: MutablePreferences, n: CoachPreferences) {
+        m[PrefKeys.hc] = n.healthConnectEnabled; m[PrefKeys.ad] = n.autoDetectRunsEnabled
+        m[PrefKeys.has] = n.healthAutoSyncEnabled; m[PrefKeys.lhs] = n.lastHealthSyncMillis
+        m[PrefKeys.fas] = n.folderAutoSyncEnabled; m[PrefKeys.dem] = n.autoFetchDemElevation
+        m[PrefKeys.furi] = n.syncFolderUri; m[PrefKeys.lfs] = n.lastFolderSyncMillis
+        m[PrefKeys.ltf] = n.lastTimelineFileModMillis
+    }
+
+    private fun read(p: Preferences) = CoachPreferences(
+        voiceCoachEnabled = p[PrefKeys.v] ?: true, hapticCuesEnabled = p[PrefKeys.h] ?: true,
+        keepScreenAwake = p[PrefKeys.w] ?: false, autoPauseEnabled = p[PrefKeys.p] ?: true,
+        autoFinishStopSeconds = p[PrefKeys.s] ?: 180, stepLengthCm = p[PrefKeys.l] ?: 74,
+        healthConnectEnabled = p[PrefKeys.hc] ?: false, autoDetectRunsEnabled = p[PrefKeys.ad] ?: true,
+        healthAutoSyncEnabled = p[PrefKeys.has] ?: true, lastHealthSyncMillis = p[PrefKeys.lhs] ?: 0L,
+        autoStartOnRunDetected = p[PrefKeys.asr] ?: false, autoTrimRunsEnabled = p[PrefKeys.atr] ?: true,
+        gyroTelemetryEnabled = p[PrefKeys.gyr] ?: true, defaultMap3dEnabled = p[PrefKeys.m3d] ?: false,
+        themeMode = p[PrefKeys.th] ?: "DARK", accentName = p[PrefKeys.acc] ?: "KDE_PURPLE",
+        mapStyleMode = p[PrefKeys.mst] ?: "MATCH_THEME", showMapAttribution = p[PrefKeys.attr] ?: true,
+        show3dBuildings = p[PrefKeys.bld] ?: true, showTerrainHillshade = p[PrefKeys.hil] ?: true,
+        physical3dTerrainMesh = p[PrefKeys.mesh] ?: true, terrainExaggerationTenths = (p[PrefKeys.tex] ?: 22).coerceIn(10, 40),
+        keepMapCenteredOnSheetDrag = p[PrefKeys.shc] ?: true, animateSectionHighlight = p[PrefKeys.hia] ?: true,
+        smoothTrackGradient = p[PrefKeys.smg] ?: true, showUserLocationDot = p[PrefKeys.udot] ?: true,
+        preloadNearbyTiles = p[PrefKeys.pret] ?: true, slopeAdjustedPaceEnabled = p[PrefKeys.slp] ?: true,
+        showTopMapHud = p[PrefKeys.hud] ?: true, showSpeedKmh = p[PrefKeys.spk] ?: true,
+        paceBaselineMode = p[PrefKeys.bsm] ?: "CURRENT_FITNESS", showCompetitionFinale = p[PrefKeys.fin] ?: true,
+        autoPocketLockOnStart = p[PrefKeys.pkl] ?: false, widgetTapGuardEnabled = p[PrefKeys.wtg] ?: true,
+        folderAutoSyncEnabled = p[PrefKeys.fas] ?: true, autoFetchDemElevation = p[PrefKeys.dem] ?: true,
+        syncFolderUri = p[PrefKeys.furi] ?: "", lastFolderSyncMillis = p[PrefKeys.lfs] ?: 0L,
+        lastTimelineFileModMillis = p[PrefKeys.ltf] ?: 0L
+    )
 }

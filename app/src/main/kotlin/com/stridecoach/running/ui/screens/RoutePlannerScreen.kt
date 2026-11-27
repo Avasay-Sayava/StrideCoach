@@ -26,6 +26,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +45,7 @@ import com.stridecoach.running.core.domain.engine.LatLon
 import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.ui.components.FloatingMapIconButton
 import com.stridecoach.running.ui.components.MapCameraMode
+import com.stridecoach.running.ui.components.MapCompassButton
 import com.stridecoach.running.ui.components.VectorRouteMap
 import com.stridecoach.running.ui.theme.KdeBorder
 import com.stridecoach.running.ui.theme.KdeCardBg
@@ -73,6 +75,9 @@ fun RoutePlannerScreen(
     var is3d by remember(prefs.defaultMap3dEnabled) { mutableStateOf(prefs.defaultMap3dEnabled) }
     var routing by remember { mutableStateOf(false) }
     var recenterTick by remember { mutableIntStateOf(0) }
+    var mapBearing by remember { mutableFloatStateOf(0f) }
+    var northLocked by remember { mutableStateOf(false) }
+    var resetNorthTick by remember { mutableIntStateOf(0) }
     var topOverlayPx by remember { mutableIntStateOf(0) }
     var bottomDockPx by remember { mutableIntStateOf(0) }
 
@@ -121,8 +126,11 @@ fun RoutePlannerScreen(
             bottomOcclusionPx = bottomDockPx,
             bottomPadDp = 190,
             recenterToken = recenterTick,
+            northLockedInFollow = northLocked,
+            resetNorthToken = resetNorthTick,
             onUserManualPan = { camMode = MapCameraMode.FREE_PAN },
             onMapTap = ::appendWaypoint,
+            onBearingChanged = { mapBearing = it },
             modifier = Modifier.fillMaxSize()
         )
         PlannerTopBar(
@@ -131,13 +139,19 @@ fun RoutePlannerScreen(
             hasPath = legs.size >= 2,
             camMode = camMode,
             is3d = is3d,
+            bearingDeg = mapBearing,
+            northLocked = northLocked,
             onMeasuredHeight = { topOverlayPx = it },
             onBack = onBack,
             onPickMode = { mode ->
                 camMode = mode
                 if (mode != MapCameraMode.FREE_PAN) recenterTick++
             },
-            onToggle3d = { is3d = !is3d }
+            onToggle3d = { is3d = !is3d },
+            onCompassClick = {
+                if (camMode == MapCameraMode.FOLLOW_RUNNER) northLocked = !northLocked
+                else resetNorthTick++
+            }
         ) {
             if (legs.isNotEmpty()) legs.removeAt(legs.lastIndex)
         }
@@ -163,10 +177,13 @@ private fun PlannerTopBar(
     hasPath: Boolean,
     camMode: MapCameraMode,
     is3d: Boolean,
+    bearingDeg: Float,
+    northLocked: Boolean,
     onMeasuredHeight: (Int) -> Unit,
     onBack: () -> Unit,
     onPickMode: (MapCameraMode) -> Unit,
     onToggle3d: () -> Unit,
+    onCompassClick: () -> Unit,
     onUndo: () -> Unit
 ) {
     val topPad = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 8.dp
@@ -200,7 +217,8 @@ private fun PlannerTopBar(
             }
             FloatingMapIconButton(Icons.AutoMirrored.Filled.Undo, "Undo", onUndo)
         }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            MapCompassButton(bearingDeg, camMode == MapCameraMode.FOLLOW_RUNNER && northLocked, onCompassClick)
             MapFocusControlBar(
                 camMode = camMode,
                 is3d = is3d,

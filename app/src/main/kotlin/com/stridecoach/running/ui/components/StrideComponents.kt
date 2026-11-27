@@ -56,6 +56,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -257,6 +259,49 @@ fun FloatingMapIconButton(
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+@Composable
+fun MapCompassButton(
+    bearingDeg: Float,
+    northLocked: Boolean,
+    onClick: () -> Unit
+) {
+    val border = if (northLocked) KdeSky else KdeBorder
+    val label = if (northLocked) "Compass North Locked" else "Compass Reset North"
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = KdeCardBg.copy(alpha = 0.92f),
+        border = BorderStroke(1.5.dp, border),
+        modifier = Modifier.size(44.dp).semantics { contentDescription = label }
+    ) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.size(22.dp)) {
+                val rad = Math.toRadians((-bearingDeg).toDouble())
+                val sin = kotlin.math.sin(rad).toFloat()
+                val cos = kotlin.math.cos(rad).toFloat()
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val r = size.minDimension * 0.44f
+                val w = size.minDimension * 0.16f
+                fun rot(px: Float, py: Float) = androidx.compose.ui.geometry.Offset(cx + px * cos - py * sin, cy + px * sin + py * cos)
+                val tipN = rot(0f, -r)
+                val tipS = rot(0f, r)
+                val sideL = rot(-w, 0f)
+                val sideR = rot(w, 0f)
+                val northPath = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(tipN.x, tipN.y); lineTo(sideR.x, sideR.y); lineTo(sideL.x, sideL.y); close()
+                }
+                val southPath = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(tipS.x, tipS.y); lineTo(sideL.x, sideL.y); lineTo(sideR.x, sideR.y); close()
+                }
+                drawPath(northPath, androidx.compose.ui.graphics.Color(0xFFF87171))
+                drawPath(southPath, KdeMuted.copy(alpha = 0.72f))
+                drawCircle(KdeText, radius = size.minDimension * 0.08f, center = androidx.compose.ui.geometry.Offset(cx, cy))
+            }
         }
     }
 }

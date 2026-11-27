@@ -3,9 +3,9 @@ package com.stridecoach.running.core.data.adapter
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
-import com.stridecoach.running.core.data.repository.AppPreferencesStore
-import com.stridecoach.running.core.data.repository.CoachPreferences
-import com.stridecoach.running.core.data.repository.StrideCoachRepository
+import android.provider.DocumentsContract.Document
+import com.stridecoach.running.core.data.repository.AppPreferencesStore as PrefsStore
+import com.stridecoach.running.core.data.repository.StrideCoachRepository as Repo
 import com.stridecoach.running.core.domain.engine.TrainingPlanGenerator
 import com.stridecoach.running.core.domain.model.RunRecord
 import com.stridecoach.running.core.domain.model.StructuredWorkout
@@ -37,187 +37,139 @@ data class FolderSyncSummary(
     val latestTimelineModMs: Long = 0L
 )
 
-/**
- * Persists an uninstall-safe full vault snapshot (`stridecoach-vault.json`) and automatically
- * imports new/updated Google Timeline JSON or Running Tracker `.backup` files inside a user-selected folder.
- */
-object VaultAndTimelineSyncManager {
-    private const val VAULT_FILENAME = "stridecoach-vault.json"
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-    private val backupAdapter = RunningTrackerBackupAdapter()
-    private val timelineAdapter = TimelineJsonImporter()
+private data class ChildDoc(val uri: Uri, val name: String, val modMs: Long)
 
-    suspend fun writeVaultSnapshot(ctx: Context, repo: StrideCoachRepository, folderUriStr: String): Boolean {
-        if (folderUriStr.isBlank()) return false
-        val treeUri = runCatching { Uri.parse(folderUriStr) }.getOrNull() ?: return false
+private class SyncAcc(var maxMod: Long) {
+    var tlFiles = 0
+    var bakFiles = 0
+    var addedActs = 0
+    var addedWalks = 0
+}
+
+object VaultAndTimelineSyncManager {
+    private const val VAULT_NAME = "stridecoach-vault.json"
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val bak = RunningTrackerBackupAdapter()
+    private val tl = TimelineJsonImporter()
+
+    suspend fun writeVaultSnapshot(ctx: Context, repo: Repo, folderUri: String): Boolean {
+        if (folderUri.isBlank()) return false
+        val tree = runCatching { Uri.parse(folderUri) }.getOrNull() ?: return false
         val dto = StrideCoachVaultDto(
             runs = repo.getAllRunsForVault(),
             walkLogs = repo.getAllWalkLogs(),
             activePlan = repo.getActivePlan(),
             templates = repo.getAllTemplatesForVault()
         )
+        val target = findOrCreateChild(ctx, tree, VAULT_NAME, "application/json") ?: return false
         val payload = json.encodeToString(dto)
-        val target = findOrCreateChild(ctx, treeUri, VAULT_FILENAME, "application/json") ?: return false
         return runCatching {
-            ctx.contentResolver.openOutputStream(target, "wt")?.bufferedWriter(Charsets.UTF_8)?.use {
-                it.write(payload)
-            }
+            ctx.contentResolver.openOutputStream(target, "wt")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(payload) }
             true
         }.getOrDefault(false)
     }
 
-    suspend fun restoreFromVaultStream(stream: InputStream, repo: StrideCoachRepository): Int {
+    suspend fun restoreFromVaultStream(stream: InputStream, repo: Repo): Int {
         val raw = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
         val dto = json.decodeFromString<StrideCoachVaultDto>(raw)
         if (dto.runs.isNotEmpty()) repo.saveRuns(dto.runs)
         if (dto.walkLogs.isNotEmpty()) repo.mergeWalkLogs(dto.walkLogs)
-        dto.activePlan?.let { cfg ->
-            val days = TrainingPlanGenerator().generate(cfg)
-            repo.activatePlan(cfg, days)
-        }
+        dto.activePlan?.let { cfg -> repo.activatePlan(cfg, TrainingPlanGenerator().generate(cfg)) }
         dto.templates.forEach { repo.saveWorkoutTemplate(it) }
         return dto.runs.size
     }
 
-    suspend fun syncFolderNow(
-        ctx: Context,
-        repo: StrideCoachRepository,
-        prefs: AppPreferencesStore,
-        forceAll: Boolean = false
-    ): FolderSyncSummary {
+    suspend fun syncFolderNow(ctx: Context, repo: Repo, prefs: PrefsStore, forceAll: Boolean = false): FolderSyncSummary {
         val p = prefs.preferences.first()
-        if (p.syncFolderUri.isBlank()) return FolderSyncSummary()
-        val treeUri = runCatching { Uri.parse(p.syncFolderUri) }.getOrNull() ?: return FolderSyncSummary()
+        val tree = p.syncFolderUri.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() } ?: return FolderSyncSummary()
+        val docs = listChildren(ctx, tree)
+        val restored = restoreVaultIfNeeded(ctx, repo, docs)
+        val existing = repo.getAllRunsWithSplits()
+        val acc = SyncAcc(p.lastTimelineFileModMillis)
 
-        val children = listChildren(ctx, treeUri)
-        var importedTl = 0
-        var importedBak = 0
-        var addedActs = 0
-        var addedWalkDays = 0
-        var restoredVault = false
-        var maxMod = p.lastTimelineFileModMillis
-
-        val curRuns = repo.getAllRunsForVault()
-        if (curRuns.isEmpty() || forceAll) {
-            val vaultEntry = children.firstOrNull { it.name.equals(VAULT_FILENAME, ignoreCase = true) }
-            if (vaultEntry != null && curRuns.isEmpty()) {
-                val restoredCount = runCatching {
-                    ctx.contentResolver.openInputStream(vaultEntry.uri)?.use { restoreFromVaultStream(it, repo) } ?: 0
-                }.getOrDefault(0)
-                if (restoredCount > 0) restoredVault = true
-            }
+        for (doc in docs) {
+            if (doc.name.equals(VAULT_NAME, ignoreCase = true)) continue
+            if (!forceAll && doc.modMs <= p.lastTimelineFileModMillis) continue
+            processDoc(ctx, repo, doc, existing, acc)
         }
 
-        val existingRuns = repo.getAllRunsWithSplits()
-        for (child in children) {
-            if (child.name.equals(VAULT_FILENAME, ignoreCase = true)) continue
-            if (!forceAll && child.lastModified <= p.lastTimelineFileModMillis) continue
-
-            val lower = child.name.lowercase()
-            if (lower.endsWith(".backup")) {
-                val parsed = runCatching {
-                    ctx.contentResolver.openInputStream(child.uri)?.use { backupAdapter.importBackupStream(it) }
-                }.getOrNull().orEmpty()
-                if (parsed.isNotEmpty()) {
-                    addedActs += repo.saveRunsDeduplicated(parsed)
-                    importedBak++
-                }
-                if (child.lastModified > maxMod) maxMod = child.lastModified
-            } else if (lower.endsWith(".json")) {
-                val head = peekHeader(ctx, child.uri)
-                val kind = backupAdapter.detectImportKind(head)
-                if (kind == ImportFileKind.GOOGLE_TIMELINE) {
-                    val sum = runCatching {
-                        ctx.contentResolver.openInputStream(child.uri)?.use {
-                            timelineAdapter.importTimelineStream(it, existingRuns)
-                        }
-                    }.getOrNull()
-                    if (sum != null) {
-                        if (sum.walkLogs.isNotEmpty()) {
-                            repo.mergeWalkLogs(sum.walkLogs)
-                            addedWalkDays += sum.walkLogs.size
-                        }
-                        if (sum.activityRecords.isNotEmpty()) {
-                            addedActs += repo.saveRunsDeduplicated(sum.activityRecords)
-                        }
-                        importedTl++
-                    }
-                    if (child.lastModified > maxMod) maxMod = child.lastModified
-                } else if (kind == ImportFileKind.RUNNING_TRACKER_BACKUP) {
-                    val parsed = runCatching {
-                        ctx.contentResolver.openInputStream(child.uri)?.use { backupAdapter.importBackupStream(it) }
-                    }.getOrNull().orEmpty()
-                    if (parsed.isNotEmpty()) {
-                        addedActs += repo.saveRunsDeduplicated(parsed)
-                        importedBak++
-                    }
-                    if (child.lastModified > maxMod) maxMod = child.lastModified
-                }
-            }
-        }
-
-        val vaultSaved = writeVaultSnapshot(ctx, repo, p.syncFolderUri)
+        val saved = writeVaultSnapshot(ctx, repo, p.syncFolderUri)
         val now = System.currentTimeMillis()
-        prefs.update { cur ->
-            cur.copy(
-                lastFolderSyncMillis = now,
-                lastTimelineFileModMillis = maxOf(cur.lastTimelineFileModMillis, maxMod)
-            )
-        }
-        return FolderSyncSummary(
-            importedTimelineFiles = importedTl,
-            importedBackupFiles = importedBak,
-            addedActivities = addedActs,
-            addedWalkDays = addedWalkDays,
-            vaultSaved = vaultSaved,
-            vaultRestored = restoredVault,
-            latestTimelineModMs = maxMod
-        )
+        prefs.update { cur -> cur.copy(lastFolderSyncMillis = now, lastTimelineFileModMillis = maxOf(cur.lastTimelineFileModMillis, acc.maxMod)) }
+        return FolderSyncSummary(acc.tlFiles, acc.bakFiles, acc.addedActs, acc.addedWalks, saved, restored, acc.maxMod)
     }
 
-    private data class ChildDoc(val uri: Uri, val name: String, val lastModified: Long)
+    private suspend fun restoreVaultIfNeeded(ctx: Context, repo: Repo, docs: List<ChildDoc>): Boolean {
+        if (repo.getAllRunsForVault().isNotEmpty()) return false
+        val entry = docs.firstOrNull { it.name.equals(VAULT_NAME, ignoreCase = true) } ?: return false
+        val count = runCatching { ctx.contentResolver.openInputStream(entry.uri)?.use { restoreFromVaultStream(it, repo) } ?: 0 }.getOrDefault(0)
+        return count > 0
+    }
 
-    private fun listChildren(ctx: Context, treeUri: Uri): List<ChildDoc> {
-        val treeId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: return emptyList()
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeId)
-        val proj = arrayOf(
-            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-            DocumentsContract.Document.COLUMN_MIME_TYPE
-        )
-        val out = mutableListOf<ChildDoc>()
-        runCatching {
-            ctx.contentResolver.query(childrenUri, proj, null, null, null)?.use { c ->
-                while (c.moveToNext()) {
-                    val id = c.getString(0)
-                    val name = c.getString(1) ?: continue
-                    val mod = c.getLong(2)
-                    val mime = c.getString(3)
-                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) continue
-                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
-                    out.add(ChildDoc(docUri, name, mod))
-                }
-            }
+    private suspend fun processDoc(ctx: Context, repo: Repo, doc: ChildDoc, existing: List<RunRecord>, acc: SyncAcc) {
+        val lower = doc.name.lowercase()
+        if (lower.endsWith(".backup")) {
+            importBackupDoc(ctx, repo, doc, acc)
+            return
         }
+        if (!lower.endsWith(".json")) return
+        when (bak.detectImportKind(peekHeader(ctx, doc.uri))) {
+            ImportFileKind.GOOGLE_TIMELINE -> importTimelineDoc(ctx, repo, doc, existing, acc)
+            ImportFileKind.RUNNING_TRACKER_BACKUP -> importBackupDoc(ctx, repo, doc, acc)
+            else -> Unit
+        }
+    }
+
+    private suspend fun importBackupDoc(ctx: Context, repo: Repo, doc: ChildDoc, acc: SyncAcc) {
+        val parsed = runCatching { ctx.contentResolver.openInputStream(doc.uri)?.use { bak.importBackupStream(it) } }.getOrNull().orEmpty()
+        if (parsed.isNotEmpty()) {
+            acc.addedActs += repo.saveRunsDeduplicated(parsed)
+            acc.bakFiles++
+        }
+        if (doc.modMs > acc.maxMod) acc.maxMod = doc.modMs
+    }
+
+    private suspend fun importTimelineDoc(ctx: Context, repo: Repo, doc: ChildDoc, existing: List<RunRecord>, acc: SyncAcc) {
+        val sum = runCatching { ctx.contentResolver.openInputStream(doc.uri)?.use { tl.importTimelineStream(it, existing) } }.getOrNull()
+        if (sum != null) {
+            if (sum.walkLogs.isNotEmpty()) {
+                repo.mergeWalkLogs(sum.walkLogs)
+                acc.addedWalks += sum.walkLogs.size
+            }
+            if (sum.activityRecords.isNotEmpty()) acc.addedActs += repo.saveRunsDeduplicated(sum.activityRecords)
+            acc.tlFiles++
+        }
+        if (doc.modMs > acc.maxMod) acc.maxMod = doc.modMs
+    }
+
+    private fun listChildren(ctx: Context, tree: Uri): List<ChildDoc> {
+        val id = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: return emptyList()
+        val uri = DocumentsContract.buildChildDocumentsUriUsingTree(tree, id)
+        val proj = arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME, Document.COLUMN_LAST_MODIFIED, Document.COLUMN_MIME_TYPE)
+        val out = mutableListOf<ChildDoc>()
+        runCatching { ctx.contentResolver.query(uri, proj, null, null, null)?.use { c -> collectDocs(c, tree, out) } }
         return out
     }
 
-    private fun findOrCreateChild(ctx: Context, treeUri: Uri, name: String, mime: String): Uri? {
-        val existing = listChildren(ctx, treeUri).firstOrNull { it.name.equals(name, ignoreCase = true) }
-        if (existing != null) return existing.uri
-        val treeId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: return null
-        val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeId)
-        return runCatching {
-            DocumentsContract.createDocument(ctx.contentResolver, parentUri, mime, name)
-        }.getOrNull()
+    private fun collectDocs(c: android.database.Cursor, tree: Uri, out: MutableList<ChildDoc>) {
+        while (c.moveToNext()) {
+            val id = c.getString(0)
+            val name = c.getString(1) ?: continue
+            if (c.getString(3) == Document.MIME_TYPE_DIR) continue
+            out.add(ChildDoc(DocumentsContract.buildDocumentUriUsingTree(tree, id), name, c.getLong(2)))
+        }
+    }
+
+    private fun findOrCreateChild(ctx: Context, tree: Uri, name: String, mime: String): Uri? {
+        listChildren(ctx, tree).firstOrNull { it.name.equals(name, ignoreCase = true) }?.let { return it.uri }
+        val id = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: return null
+        val parent = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+        return runCatching { DocumentsContract.createDocument(ctx.contentResolver, parent, mime, name) }.getOrNull()
     }
 
     private fun peekHeader(ctx: Context, uri: Uri): String {
         val buf = ByteArray(4096)
-        val n = runCatching {
-            ctx.contentResolver.openInputStream(uri)?.use { it.read(buf) } ?: 0
-        }.getOrDefault(0)
+        val n = runCatching { ctx.contentResolver.openInputStream(uri)?.use { it.read(buf) } ?: 0 }.getOrDefault(0)
         return if (n > 0) String(buf, 0, n, Charsets.UTF_8) else ""
     }
 }

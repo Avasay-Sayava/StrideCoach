@@ -40,6 +40,7 @@ import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +64,7 @@ import com.stridecoach.running.core.tracking.MovementState
 import com.stridecoach.running.ui.components.FloatingMapIconButton
 import com.stridecoach.running.ui.components.HoldToFinishButton
 import com.stridecoach.running.ui.components.MapCameraMode
+import com.stridecoach.running.ui.components.MapCompassButton
 import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.TelemetryStatStrip
 import com.stridecoach.running.ui.components.TopTelemetryMapHud
@@ -108,6 +110,9 @@ fun LiveRunScreen(
     var is3d by remember(prefs.defaultMap3dEnabled) { mutableStateOf(prefs.defaultMap3dEnabled) }
     var selectedKind by remember { mutableStateOf(ActivityKind.RUNNING) }
     var recenterTick by remember { mutableIntStateOf(0) }
+    var mapBearing by remember { mutableFloatStateOf(0f) }
+    var northLocked by remember { mutableStateOf(false) }
+    var resetNorthTick by remember { mutableIntStateOf(0) }
     var containerHeightPx by remember { mutableIntStateOf(0) }
     var topOverlayPx by remember { mutableIntStateOf(0) }
 
@@ -167,7 +172,10 @@ fun LiveRunScreen(
                 topHudDp = if (prefs.showTopMapHud) 202 else 124,
                 bottomPadDp = 272,
                 recenterToken = recenterTick,
+                northLockedInFollow = northLocked,
+                resetNorthToken = resetNorthTick,
                 onUserManualPan = { camMode = MapCameraMode.FREE_PAN },
+                onBearingChanged = { mapBearing = it },
                 modifier = Modifier.fillMaxSize()
             )
             LiveTopFloatingHud(
@@ -178,6 +186,8 @@ fun LiveRunScreen(
                 hasPath = hasPath,
                 camMode = camMode,
                 is3d = is3d,
+                bearingDeg = mapBearing,
+                northLocked = northLocked,
                 onMeasuredHeight = { topOverlayPx = it },
                 onToggleLock = { locked = !locked },
                 onOpenPlanner = onOpenPlanner,
@@ -185,7 +195,11 @@ fun LiveRunScreen(
                     camMode = mode
                     if (mode != MapCameraMode.FREE_PAN) recenterTick++
                 },
-                onToggle3d = { is3d = !is3d }
+                onToggle3d = { is3d = !is3d },
+                onCompassClick = {
+                    if (camMode == MapCameraMode.FOLLOW_RUNNER) northLocked = !northLocked
+                    else resetNorthTick++
+                }
             )
         }
     }
@@ -200,11 +214,14 @@ private fun LiveTopFloatingHud(
     hasPath: Boolean,
     camMode: MapCameraMode,
     is3d: Boolean,
+    bearingDeg: Float,
+    northLocked: Boolean,
     onMeasuredHeight: (Int) -> Unit,
     onToggleLock: () -> Unit,
     onOpenPlanner: () -> Unit,
     onPickMode: (MapCameraMode) -> Unit,
-    onToggle3d: () -> Unit
+    onToggle3d: () -> Unit,
+    onCompassClick: () -> Unit
 ) {
     val topPad = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 8.dp
     val accLabel = st.gpsAccM?.let { "±${it.toInt()}m" } ?: "GPS"
@@ -232,21 +249,7 @@ private fun LiveTopFloatingHud(
                 color = KdeCardBg.copy(alpha = 0.90f),
                 border = BorderStroke(1.dp, KdeBorder)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val title = sn?.activeStep?.displayName() ?: st.workout?.title ?: "Live Vector Map"
-                    Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
-                        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        val gyroTxt = if (st.gyroActive && st.strideStabilityPct > 0) " • Form ${st.strideStabilityPct}%" else ""
-                        val gradeTxt = if (kotlin.math.abs(st.currentGradePct) >= 1.5f) " • ${"%.0f".format(st.currentGradePct)}% slope" else ""
-                        val mode = if (st.isActive) "${st.actType.name.replace('_', ' ')} • $accLabel$gyroTxt$gradeTxt" else "Ready • $accLabel"
-                        Text(mode, style = MaterialTheme.typography.labelSmall, color = actColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    StepCountdownPill(st)
-                }
+                LiveStatusPillBody(st, accLabel, actColor)
             }
             if (!st.isActive) FloatingMapIconButton(Icons.AutoMirrored.Filled.AltRoute, "Plan Route", onOpenPlanner, KdePurple)
             if (st.isActive) {
@@ -276,7 +279,8 @@ private fun LiveTopFloatingHud(
             )
         }
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            MapCompassButton(bearingDeg, camMode == MapCameraMode.FOLLOW_RUNNER && northLocked, onCompassClick)
             MapFocusControlBar(
                 camMode = camMode,
                 is3d = is3d,
@@ -375,46 +379,30 @@ private fun ActiveHudSheetBody(
 ) {
     val sn = st.snapshot
     val distM = sn?.totalDistanceMeters ?: 0.0
-    val elapsedMs = sn?.totalElapsedMillis ?: 0L
-    val distKm = distM / 1000.0
-    val distText = "%.2f km".format(distKm)
-    val overallAvgPaceSec = if (distM >= 25.0 && elapsedMs > 0L) {
-        ((elapsedMs / 1000.0) / distKm).roundToInt()
-    } else {
-        sn?.currentPaceSecPerKm ?: 0
-    }
-    val overallAvgSpeedKmh = if (elapsedMs > 2_000L && distM >= 5.0) {
-        ((distM / (elapsedMs / 1000.0)) * 3.6).toFloat()
-    } else {
-        0f
-    }
-    val paceText = if (overallAvgPaceSec > 0) "${formatPace(overallAvgPaceSec)}/km" else "--:--/km"
-    val timeText = formatDuration(elapsedMs)
-    val cadText = if (st.cadenceSpm > 0) "${st.cadenceSpm} spm" else "—"
-    val calFactor = if (st.activityKind == ActivityKind.CYCLING) 32.0 else 62.0
-    val liveKcal = (distKm * calFactor).roundToInt()
-    val elevGainText = "+${st.elevM}m"
+    val ms = sn?.totalElapsedMillis ?: 0L
+    val km = distM / 1000.0
+    val avgPace = if (distM >= 25.0 && ms > 0L) ((ms / 1000.0) / km).roundToInt() else (sn?.currentPaceSecPerKm ?: 0)
+    val avgKmh = if (ms > 2_000L && distM >= 5.0) ((distM / (ms / 1000.0)) * 3.6).toFloat() else 0f
+    val paceTxt = if (avgPace > 0) "${formatPace(avgPace)}/km" else "--:--/km"
+    val cadTxt = if (st.cadenceSpm > 0) "${st.cadenceSpm} spm" else "—"
+    val kcal = (km * if (st.activityKind == ActivityKind.CYCLING) 32.0 else 62.0).roundToInt()
 
     Column(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        TelemetryStatStrip(
-            items = listOf(
-                timeText to "Total Time",
-                distText to "Total Dist",
-                paceText to "Avg Pace",
-                "%.1f km/h".format(overallAvgSpeedKmh) to "Avg Speed"
-            )
-        )
-        TelemetryStatStrip(
-            items = listOf(
-                cadText to "Cadence",
-                "$liveKcal kcal" to "Calories",
-                elevGainText to "Elev Gain",
-                "${st.steps}" to "Steps"
-            )
-        )
+        TelemetryStatStrip(listOf(
+            formatDuration(ms) to "Total Time",
+            "%.2f km".format(km) to "Total Dist",
+            paceTxt to "Avg Pace",
+            "%.1f km/h".format(avgKmh) to "Avg Speed"
+        ))
+        TelemetryStatStrip(listOf(
+            cadTxt to "Cadence",
+            "$kcal kcal" to "Calories",
+            "+${st.elevM}m" to "Elev Gain",
+            "${st.steps}" to "Steps"
+        ))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -446,14 +434,9 @@ private fun ActiveHudSheetBody(
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column {
                 Text("Workout Avg Pace", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
-                Text(paceText, style = MaterialTheme.typography.headlineSmall.merge(TabularNumberStyle), fontWeight = FontWeight.Bold, color = KdePurple)
+                Text(paceTxt, style = MaterialTheme.typography.headlineSmall.merge(TabularNumberStyle), fontWeight = FontWeight.Bold, color = KdePurple)
             }
-            sn?.projectedFinishMillis?.let { pf ->
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("Projected Finish", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
-                    Text(formatDuration(pf), style = MaterialTheme.typography.titleLarge.merge(TabularNumberStyle), fontWeight = FontWeight.Bold, color = KdeSky)
-                }
-            }
+            sn?.projectedFinishMillis?.let { ProjectedFinishCol(it) }
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("WakeLock", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
@@ -461,5 +444,33 @@ private fun ActiveHudSheetBody(
             Text("Pocket Lock", style = MaterialTheme.typography.bodySmall, color = KdeMuted)
             Switch(checked = locked, onCheckedChange = onLock)
         }
+    }
+}
+
+@Composable
+private fun LiveStatusPillBody(st: LiveTrackingState, acc: String, color: Color) {
+    val sn = st.snapshot
+    val title = sn?.activeStep?.displayName() ?: st.workout?.title ?: "Live Vector Map"
+    val gyro = if (st.gyroActive && st.strideStabilityPct > 0) " • Form ${st.strideStabilityPct}%" else ""
+    val grade = if (kotlin.math.abs(st.currentGradePct) >= 1.5f) " • ${"%.0f".format(st.currentGradePct)}% slope" else ""
+    val mode = if (st.isActive) "${st.actType.name.replace('_', ' ')} • $acc$gyro$grade" else "Ready • $acc"
+    Row(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(mode, style = MaterialTheme.typography.labelSmall, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        StepCountdownPill(st)
+    }
+}
+
+@Composable
+private fun ProjectedFinishCol(ms: Long) {
+    Column(horizontalAlignment = Alignment.End) {
+        Text("Projected Finish", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
+        Text(formatDuration(ms), style = MaterialTheme.typography.titleLarge.merge(TabularNumberStyle), fontWeight = FontWeight.Bold, color = KdeSky)
     }
 }

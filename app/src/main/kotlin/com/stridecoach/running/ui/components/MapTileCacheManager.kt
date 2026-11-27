@@ -10,35 +10,40 @@ import org.maplibre.android.offline.OfflineRegion
  */
 object MapTileCacheManager {
     @Volatile
-    private var ambientConfigured = false
+    private var ready = false
 
     fun configureAmbientCache(ctx: Context) {
-        if (ambientConfigured) return
-        ambientConfigured = true
-        val appCtx = ctx.applicationContext
+        if (ready) return
+        ready = true
         runCatching {
-            val mgr = OfflineManager.getInstance(appCtx)
+            val mgr = OfflineManager.getInstance(ctx.applicationContext)
             mgr.setMaximumAmbientCacheSize(200L * 1024L * 1024L, null)
-            mgr.listOfflineRegions(object : OfflineManager.ListOfflineRegionsCallback {
-                override fun onList(offlineRegions: Array<OfflineRegion>?) {
-                    offlineRegions?.forEach { region ->
-                        runCatching {
-                            region.setDownloadState(OfflineRegion.STATE_INACTIVE)
-                            region.delete(object : OfflineRegion.OfflineRegionDeleteCallback {
-                                override fun onDelete() = Unit
-                                override fun onError(error: String) = Unit
-                            })
-                        }
-                    }
-                }
-
-                override fun onError(error: String) = Unit
-            })
+            purgeOffline(mgr)
         }
     }
 
-    fun preloadAround(ctx: Context, lat: Double, lon: Double, styleUri: String) {
+    fun preloadAround(ctx: Context, lat: Double, lon: Double, style: String) {
         if (lat !in -85.0..85.0 || lon !in -179.9..179.9) return
         configureAmbientCache(ctx)
+    }
+
+    private fun purgeOffline(mgr: OfflineManager) {
+        mgr.listOfflineRegions(object : OfflineManager.ListOfflineRegionsCallback {
+            override fun onList(regions: Array<OfflineRegion>?) {
+                regions?.forEach(::dropRegion)
+            }
+
+            override fun onError(err: String) = Unit
+        })
+    }
+
+    private fun dropRegion(reg: OfflineRegion) {
+        runCatching {
+            reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
+            reg.delete(object : OfflineRegion.OfflineRegionDeleteCallback {
+                override fun onDelete() = Unit
+                override fun onError(err: String) = Unit
+            })
+        }
     }
 }

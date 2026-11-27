@@ -105,6 +105,10 @@ private class VectorMapHolder {
     var lastTrimKey: String = ""
     var lastHiKey: String = ""
     var lastHiTrig: Int = -1
+    var hasHiActive: Boolean = false
+    var hiAnimUntilMs: Long = 0L
+    var lastResetNorth: Int = -1
+    var lastBearingDeg: Float = -999f
     var lastPreload: Boolean? = null
     var lastPreloadKey: String = ""
     var lastPaceRenderKey: String = ""
@@ -156,13 +160,18 @@ fun VectorRouteMap(
     bottomPadDp: Int = 180,
     topHudDp: Int = 128,
     recenterToken: Int = 0,
+    playing: Boolean = false,
+    northLockedInFollow: Boolean = false,
+    resetNorthToken: Int = 0,
     onUserManualPan: () -> Unit = {},
-    onMapTap: ((LatLon) -> Unit)? = null
+    onMapTap: ((LatLon) -> Unit)? = null,
+    onBearingChanged: ((Float) -> Unit)? = null
 ) {
     val ctx = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val tapCb = rememberUpdatedState(onMapTap)
     val panCb = rememberUpdatedState(onUserManualPan)
+    val brgCb = rememberUpdatedState(onBearingChanged)
     val density = LocalDensity.current
     val staticBottomPx = with(density) { bottomPadDp.dp.roundToPx() }
     val topHudPx = with(density) { topHudDp.dp.roundToPx() }
@@ -208,9 +217,13 @@ fun VectorRouteMap(
             fitSidePx = fitSidePx,
             hiBottomPx = effectiveHiBottomPx,
             recenterToken = recenterToken,
+            playing = playing,
+            northLockedInFollow = northLockedInFollow,
+            resetNorthToken = resetNorthToken,
             onUserManualPan = onUserManualPan,
             onMapTap = onMapTap,
-            onWebGlUnsupported = { webGlUnsupported = true }
+            onWebGlUnsupported = { webGlUnsupported = true },
+            onBearingChanged = onBearingChanged
         )
         return
     }
@@ -240,7 +253,7 @@ fun VectorRouteMap(
                 cameraMode, is3dMode, show3dBuildings, showTerrainHillshade, keepCenteredOnSheetDrag,
                 lockAutoFit, preloadTiles, styleUri, liveHeadingDeg, fallbackCenter,
                 effectiveTopPx, effectiveBottomPx, fitTopClearPx, fitBottomClearPx, fitSidePx,
-                effectiveHiBottomPx, recenterToken
+                effectiveHiBottomPx, recenterToken, northLockedInFollow, resetNorthToken
             )
         }
     }
@@ -269,6 +282,13 @@ fun VectorRouteMap(
             ml.addOnCameraMoveStartedListener { reason ->
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE && holder.styleReady) {
                     panCb.value()
+                }
+            }
+            ml.addOnCameraMoveListener {
+                val deg = ml.cameraPosition.bearing.toFloat()
+                if (kotlin.math.abs(deg - holder.lastBearingDeg) >= 1.5f) {
+                    holder.lastBearingDeg = deg
+                    brgCb.value?.invoke(deg)
                 }
             }
             ml.addOnMapClickListener { ll ->
@@ -344,7 +364,7 @@ fun VectorRouteMap(
                     cameraMode, is3dMode, show3dBuildings, showTerrainHillshade, keepCenteredOnSheetDrag,
                     lockAutoFit, preloadTiles, styleUri, liveHeadingDeg, fallbackCenter,
                     effectiveTopPx, effectiveBottomPx, fitTopClearPx, fitBottomClearPx, fitSidePx,
-                    effectiveHiBottomPx, recenterToken
+                    effectiveHiBottomPx, recenterToken, northLockedInFollow, resetNorthToken
                 )
             }
         },
@@ -498,7 +518,9 @@ private fun syncVectorScene(
     fitBottomClearPx: Int,
     fitSidePx: Int,
     hiBottomOcclusionPx: Int,
-    recenter: Int
+    recenter: Int,
+    northLocked: Boolean,
+    resetNorth: Int
 ) {
     val ml = h.map ?: return
     val st = ml.style ?: return
@@ -511,7 +533,17 @@ private fun syncVectorScene(
         visibility(if (is3dMode && showTerrainHillshade) Property.VISIBLE else Property.NONE)
     )
 
-    if (cameraMode == MapCameraMode.FREE_PAN && keepCenteredOnSheetDrag && h.lastCamMode == MapCameraMode.FREE_PAN && h.lastBottomOccPx >= 0) {
+    if (resetNorth != h.lastResetNorth) {
+        val hadNorth = h.lastResetNorth != -1
+        h.lastResetNorth = resetNorth
+        if (hadNorth) {
+            val cur = ml.cameraPosition
+            ml.animateCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(cur).bearing(0.0).build()), 340)
+        }
+    }
+
+    val nowUptime = android.os.SystemClock.uptimeMillis()
+    if (cameraMode == MapCameraMode.FREE_PAN && keepCenteredOnSheetDrag && h.lastCamMode == MapCameraMode.FREE_PAN && h.lastBottomOccPx >= 0 && nowUptime >= h.hiAnimUntilMs) {
         val delta = bottomOcclusionPx - h.lastBottomOccPx
         if (kotlin.math.abs(delta) >= 8) {
             ml.scrollBy(0f, -delta / 2f)
@@ -532,7 +564,7 @@ private fun syncVectorScene(
     syncHead(h, st, validPts, head, showHead)
     updateCamera(
         ml, h, validPts, validGuide, geoHash, userLoc, fallbackCenter, head, cameraMode, is3dMode, lockAutoFit,
-        liveHeadingDeg, effectiveTopPx, bottomOcclusionPx, fitTopClearPx, fitBottomClearPx, fitSidePx, recenter
+        liveHeadingDeg, effectiveTopPx, bottomOcclusionPx, fitTopClearPx, fitBottomClearPx, fitSidePx, recenter, northLocked
     )
 
     val preloadKey = "${geoHash}_$styleUri"
@@ -731,12 +763,24 @@ private fun syncHiSlice(
     if (h.lastHiKey == k) return
     h.lastHiKey = k
     val src = st.getSourceAs<GeoJsonSource>("hi-src") ?: return
+    val hiLayer = st.getLayerAs<LineLayer>("hi-layer")
     if (range == null || pts.size < 2 || range.last - range.first < 1) {
-        h.activeHiAnim?.cancel()
-        h.pendingFadeRunnable?.let { h.mainHandler.removeCallbacks(it) }
-        src.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+        if (h.hasHiActive && hiLayer != null) {
+            h.hasHiActive = false
+            fadeOutHighlight2d(h, src, hiLayer)
+        } else {
+            h.hasHiActive = false
+            h.activeHiAnim?.cancel()
+            h.pendingFadeRunnable?.let { h.mainHandler.removeCallbacks(it) }
+            src.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+        }
         return
     }
+    h.hasHiActive = true
+    h.activeHiAnim?.cancel()
+    h.pendingFadeRunnable?.let { h.mainHandler.removeCallbacks(it) }
+    hiLayer?.setProperties(lineColor(Color.parseColor("#256F96")), lineWidth(10.5f), lineOpacity(1.0f))
+
     val s = range.first.coerceIn(0, pts.lastIndex)
     val e = range.last.coerceIn(s, pts.lastIndex)
     val slice = (s..e).map { pts[it] }
@@ -745,13 +789,14 @@ private fun syncHiSlice(
 
     if (trigger != h.lastHiTrig) {
         h.lastHiTrig = trigger
+        h.hiAnimUntilMs = android.os.SystemClock.uptimeMillis() + 680L
         val bounds = LatLngBounds.Builder().apply {
             slice.forEach { include(LatLng(it.latitude, it.longitude)) }
         }.build()
         val mvW = h.mapView?.width ?: 1080
         val mvH = h.mapView?.height ?: 1920
-        val safeTop = (topHudPx + 56).coerceIn(24, (mvH * 0.42f).toInt().coerceAtLeast(32))
-        val safeBot = (bottomOcclusionPx + 56).coerceIn(24, (mvH * 0.44f).toInt().coerceAtLeast(32))
+        val safeTop = (topHudPx + 40).coerceIn(24, (mvH * 0.42f).toInt().coerceAtLeast(32))
+        val safeBot = (bottomOcclusionPx + 40).coerceIn(24, (mvH * 0.58f).toInt().coerceAtLeast(32))
         val safeSide = 72.coerceIn(24, (mvW * 0.22f).toInt().coerceAtLeast(24))
         ml.setPadding(0, 0, 0, 0)
         val cam2d = ml.getCameraForLatLngBounds(bounds, intArrayOf(safeSide, safeTop, safeSide, safeBot), 0.0, 0.0)
@@ -762,14 +807,15 @@ private fun syncHiSlice(
                     .zoom((it.zoom - 0.35).coerceAtLeast(1.0))
                     .tilt(46.0)
                     .bearing(0.0)
-                    .padding(0.0, 0.0, 0.0, 0.0)
+                    .padding(safeSide.toDouble(), safeTop.toDouble(), safeSide.toDouble(), safeBot.toDouble())
                     .build()
             } else {
-                CameraPosition.Builder(it).padding(0.0, 0.0, 0.0, 0.0).build()
+                CameraPosition.Builder(it)
+                    .padding(safeSide.toDouble(), safeTop.toDouble(), safeSide.toDouble(), safeBot.toDouble())
+                    .build()
             }
         }
 
-        val hiLayer = st.getLayerAs<LineLayer>("hi-layer")
         if (animateHighlight && hiLayer != null) {
             startHighlightPulseIn(h, hiLayer)
         }
@@ -837,6 +883,23 @@ private fun blendArgb(a: Int, b: Int, t: Float): Int {
     return Color.rgb(r, g, bl)
 }
 
+private fun fadeOutHighlight2d(h: VectorMapHolder, src: GeoJsonSource, layer: LineLayer) {
+    h.activeHiAnim?.cancel()
+    h.pendingFadeRunnable?.let { h.mainHandler.removeCallbacks(it) }
+    h.activeHiAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 260L
+        addUpdateListener { va ->
+            val t = va.animatedValue as Float
+            layer.setProperties(lineOpacity(1.0f - t), lineWidth(10.5f - 4.0f * t))
+            if (t >= 0.99f) {
+                src.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+                layer.setProperties(lineColor(Color.parseColor("#256F96")), lineWidth(10.5f), lineOpacity(1.0f))
+            }
+        }
+        start()
+    }
+}
+
 private fun syncHead(h: VectorMapHolder, st: Style, pts: List<TrackPoint>, head: ReplayHead?, showHead: Boolean) {
     val hk = if (!showHead || pts.isEmpty()) "off" else "${head?.lat ?: pts.last().latitude}_${head?.lon ?: pts.last().longitude}"
     if (hk == h.lastHeadKey) return
@@ -872,7 +935,8 @@ private fun updateCamera(
     fitTopClearPx: Int,
     fitBottomClearPx: Int,
     fitSidePx: Int,
-    recenter: Int
+    recenter: Int,
+    northLocked: Boolean
 ) {
     val mvW = h.mapView?.width ?: 0
     val mvH = h.mapView?.height ?: 0
@@ -902,7 +966,7 @@ private fun updateCamera(
         MapCameraMode.FOLLOW_RUNNER -> applyFollowRunnerCamera(
             ml, h, pts, guidePts, routePts, geoHash, userLoc, fallbackCenter, head,
             is3d, modeChanged, toggle3dChanged, liveHeading, mvW, mvH,
-            effectiveTopPx, bottomOcclusionPx, recenter
+            effectiveTopPx, bottomOcclusionPx, recenter, northLocked
         )
         MapCameraMode.FREE_PAN -> applyFreePanCamera(
             ml, h, guidePts, routePts, geoHash, userLoc, fallbackCenter,
@@ -1013,14 +1077,15 @@ private fun applyFollowRunnerCamera(
     mvH: Int,
     effectiveTopPx: Int,
     bottomOcclusionPx: Int,
-    recenter: Int
+    recenter: Int,
+    northLocked: Boolean
 ) {
     h.lastFitKey = ""
     val tgt = head?.let { LatLon(it.lat, it.lon) }
         ?: pts.lastOrNull()?.let { LatLon(it.latitude, it.longitude) }
         ?: userLoc ?: guidePts.firstOrNull() ?: fallbackCenter
-    val brg = if (is3d) (head?.bearingDeg ?: liveHeading ?: 0f).toDouble() else 0.0
-    val followKey = "${"%.6f".format(tgt.latitude)}_${"%.6f".format(tgt.longitude)}_${is3d}_${recenter}_${effectiveTopPx / 16}_${bottomOcclusionPx / 16}_${"%.0f".format(brg)}_${mvW / 32}_${mvH / 32}"
+    val brg = if (is3d && !northLocked) (head?.bearingDeg ?: liveHeading ?: 0f).toDouble() else 0.0
+    val followKey = "${"%.6f".format(tgt.latitude)}_${"%.6f".format(tgt.longitude)}_${is3d}_${recenter}_${northLocked}_${effectiveTopPx / 16}_${bottomOcclusionPx / 16}_${"%.0f".format(brg)}_${mvW / 32}_${mvH / 32}"
     if (followKey == h.lastFollowKey && !modeChanged && !toggle3dChanged) return
 
     val hadPrior = h.lastFollowKey.isNotEmpty()

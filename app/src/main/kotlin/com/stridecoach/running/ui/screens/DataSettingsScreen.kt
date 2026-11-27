@@ -174,124 +174,174 @@ fun DataSettingsScreen(
         modifier = Modifier.fillMaxSize().verticalScroll(scrl).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (activePage != null && query.isBlank()) {
-                IconButton(onClick = { activePage = null }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Settings")
-                }
-            }
-            Text(
-                text = when {
-                    query.isNotBlank() -> "Search Settings"
-                    activePage != null -> activePage!!.title
-                    else -> "Settings & Data"
-                },
-                style = if (activePage != null && query.isBlank()) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            if (query.isBlank() && activePage == null) {
-                StatusPill("${activityCounts.runs}R • ${activityCounts.walks}W", KdePurple)
-            }
-        }
-
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            placeholder = { Text("Search settings…", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = KdeMuted) },
-            trailingIcon = {
-                if (query.isNotBlank()) {
-                    IconButton(onClick = { query = "" }) {
-                        Icon(Icons.Default.Close, contentDescription = "Clear search", tint = KdeMuted)
-                    }
-                }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.fillMaxWidth()
+        SettingsTopBar(query, activePage, activityCounts) { activePage = null }
+        SettingsSearchBox(query) { query = it }
+        SettingsMainBody(
+            trimmed = query.trim().lowercase(),
+            activePage = activePage,
+            prefs = prefs,
+            busy = busy,
+            summary = summary,
+            activityCounts = activityCounts,
+            trashCount = trashCount,
+            battOk = battOk,
+            hcAvail = hcAvail,
+            hcOk = hcOk,
+            onHcConnect = onHcConnect,
+            onHcSync = onHcSync,
+            onHealthAutoSync = onHealthAutoSync,
+            onAutoDetect = onAutoDetect,
+            onAutoStart = onAutoStart,
+            onPickSyncFolder = onPickSyncFolder,
+            onSyncFolderNow = onSyncFolderNow,
+            onRestoreVaultFile = onRestoreVaultFile,
+            onOpenTrash = onOpenTrash,
+            onUpdate = onUpdate,
+            onImpBak = onImpBak,
+            onExpBak = onExpBak,
+            onImpTl = onImpTl,
+            onBattReq = onBattReq,
+            onPickPage = { activePage = it },
+            onJump = { p -> query = ""; activePage = p }
         )
+    }
+}
 
-        val trimmed = query.trim().lowercase()
-        when {
-            trimmed.isNotEmpty() -> {
-                SearchResultsBody(
-                    query = trimmed,
-                    prefs = prefs,
-                    busy = busy,
-                    summary = summary,
-                    activityCounts = activityCounts,
-                    trashCount = trashCount,
-                    battOk = battOk,
-                    hcAvail = hcAvail,
-                    hcOk = hcOk,
-                    onHcConnect = onHcConnect,
-                    onHcSync = onHcSync,
-                    onHealthAutoSync = onHealthAutoSync,
-                    onAutoDetect = onAutoDetect,
-                    onAutoStart = onAutoStart,
-                    onPickSyncFolder = onPickSyncFolder,
-                    onSyncFolderNow = onSyncFolderNow,
-                    onRestoreVaultFile = onRestoreVaultFile,
-                    onOpenTrash = onOpenTrash,
-                    onUpdate = onUpdate,
-                    onImpBak = onImpBak,
-                    onExpBak = onExpBak,
-                    onImpTl = onImpTl,
-                    onBattReq = onBattReq,
-                    onJumpToPage = { p ->
-                        query = ""
-                        activePage = p
-                    }
-                )
-            }
-
-            activePage == null -> {
-                SettingsHubBody(
-                    prefs = prefs,
-                    trashCount = trashCount,
-                    battOk = battOk,
-                    hcOk = hcOk,
-                    counts = activityCounts,
-                    onPickPage = { activePage = it }
-                )
-            }
-
-            else -> {
-                when (activePage!!) {
-                    SettingsPage.APPEARANCE -> {
-                        ThemeModeAccentCard(prefs, onUpdate)
-                        MapStyleAttributionCard(prefs, onUpdate)
-                    }
-                    SettingsPage.MAPS_3D -> {
-                        Terrain3DSettingsCard(prefs, onUpdate)
-                        MapRenderSettingsCard(prefs, onUpdate)
-                    }
-                    SettingsPage.COACHING -> {
-                        PaceBaselineCoachingCard(prefs, onUpdate)
-                        AudioSensorCoachingCard(prefs, onUpdate)
-                    }
-                    SettingsPage.LOCK_DETECT -> {
-                        LockscreenProtectionCard(prefs, onUpdate)
-                        AutoCard(prefs, hcAvail, hcOk, busy, onHcConnect, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart)
-                        BattCard(battOk, onBattReq)
-                        GuideCard()
-                    }
-                    SettingsPage.SYNC_VAULT -> {
-                        VaultSyncCard(prefs, busy, onPickSyncFolder, onSyncFolderNow, onRestoreVaultFile, onUpdate)
-                    }
-                    SettingsPage.BACKUP_TRASH -> {
-                        PortabilityAndTrashCard(busy, summary, activityCounts, trashCount, onImpBak, onExpBak, onImpTl, onOpenTrash)
-                    }
-                }
-            }
+@Composable
+private fun SettingsTopBar(query: String, activePage: SettingsPage?, counts: QuadCounts, onBack: () -> Unit) {
+    val subPage = activePage != null && query.isBlank()
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (subPage) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Settings") }
+        val title = when {
+            query.isNotBlank() -> "Search Settings"
+            activePage != null -> activePage.title
+            else -> "Settings & Data"
         }
+        Text(
+            text = title,
+            style = if (subPage) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+        )
+        if (query.isBlank() && activePage == null) StatusPill("${counts.runs}R • ${counts.walks}W", KdePurple)
+    }
+}
+
+@Composable
+private fun SettingsSearchBox(query: String, onQuery: (String) -> Unit) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQuery,
+        placeholder = { Text("Search settings…", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = KdeMuted) },
+        trailingIcon = {
+            if (query.isNotBlank()) {
+                IconButton(onClick = { onQuery("") }) { Icon(Icons.Default.Close, contentDescription = "Clear search", tint = KdeMuted) }
+            }
+        },
+        singleLine = true, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()
+    )
+}
+
+@Composable
+private fun SettingsMainBody(
+    trimmed: String,
+    activePage: SettingsPage?,
+    prefs: CoachPreferences,
+    busy: Boolean,
+    summary: String?,
+    activityCounts: QuadCounts,
+    trashCount: Int,
+    battOk: Boolean,
+    hcAvail: Boolean,
+    hcOk: Boolean,
+    onHcConnect: () -> Unit,
+    onHcSync: () -> Unit,
+    onHealthAutoSync: (Boolean) -> Unit,
+    onAutoDetect: (Boolean) -> Unit,
+    onAutoStart: (Boolean) -> Unit,
+    onPickSyncFolder: () -> Unit,
+    onSyncFolderNow: () -> Unit,
+    onRestoreVaultFile: () -> Unit,
+    onOpenTrash: () -> Unit,
+    onUpdate: ((CoachPreferences) -> CoachPreferences) -> Unit,
+    onImpBak: () -> Unit,
+    onExpBak: () -> Unit,
+    onImpTl: () -> Unit,
+    onBattReq: () -> Unit,
+    onPickPage: (SettingsPage) -> Unit,
+    onJump: (SettingsPage) -> Unit
+) {
+    if (trimmed.isNotEmpty()) {
+        SearchResultsBody(
+            query = trimmed, prefs = prefs, busy = busy, summary = summary,
+            activityCounts = activityCounts, trashCount = trashCount, battOk = battOk,
+            hcAvail = hcAvail, hcOk = hcOk, onHcConnect = onHcConnect, onHcSync = onHcSync,
+            onHealthAutoSync = onHealthAutoSync, onAutoDetect = onAutoDetect, onAutoStart = onAutoStart,
+            onPickSyncFolder = onPickSyncFolder, onSyncFolderNow = onSyncFolderNow,
+            onRestoreVaultFile = onRestoreVaultFile, onOpenTrash = onOpenTrash, onUpdate = onUpdate,
+            onImpBak = onImpBak, onExpBak = onExpBak, onImpTl = onImpTl, onBattReq = onBattReq, onJumpToPage = onJump
+        )
+        return
+    }
+    if (activePage == null) {
+        SettingsHubBody(prefs, trashCount, battOk, hcOk, activityCounts, onPickPage)
+        return
+    }
+    SettingsSubPageContent(
+        activePage, prefs, busy, summary, activityCounts, trashCount, battOk, hcAvail, hcOk,
+        onHcConnect, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart,
+        onPickSyncFolder, onSyncFolderNow, onRestoreVaultFile, onOpenTrash, onUpdate,
+        onImpBak, onExpBak, onImpTl, onBattReq
+    )
+}
+
+@Composable
+private fun SettingsSubPageContent(
+    page: SettingsPage,
+    prefs: CoachPreferences,
+    busy: Boolean,
+    summary: String?,
+    activityCounts: QuadCounts,
+    trashCount: Int,
+    battOk: Boolean,
+    hcAvail: Boolean,
+    hcOk: Boolean,
+    onHcConnect: () -> Unit,
+    onHcSync: () -> Unit,
+    onHealthAutoSync: (Boolean) -> Unit,
+    onAutoDetect: (Boolean) -> Unit,
+    onAutoStart: (Boolean) -> Unit,
+    onPickSyncFolder: () -> Unit,
+    onSyncFolderNow: () -> Unit,
+    onRestoreVaultFile: () -> Unit,
+    onOpenTrash: () -> Unit,
+    onUpdate: ((CoachPreferences) -> CoachPreferences) -> Unit,
+    onImpBak: () -> Unit,
+    onExpBak: () -> Unit,
+    onImpTl: () -> Unit,
+    onBattReq: () -> Unit
+) {
+    when (page) {
+        SettingsPage.APPEARANCE -> {
+            ThemeModeAccentCard(prefs, onUpdate)
+            MapStyleAttributionCard(prefs, onUpdate)
+        }
+        SettingsPage.MAPS_3D -> {
+            Terrain3DSettingsCard(prefs, onUpdate)
+            MapRenderSettingsCard(prefs, onUpdate)
+        }
+        SettingsPage.COACHING -> {
+            PaceBaselineCoachingCard(prefs, onUpdate)
+            AudioSensorCoachingCard(prefs, onUpdate)
+        }
+        SettingsPage.LOCK_DETECT -> {
+            LockscreenProtectionCard(prefs, onUpdate)
+            AutoCard(prefs, hcAvail, hcOk, busy, onHcConnect, onHcSync, onHealthAutoSync, onAutoDetect, onAutoStart)
+            BattCard(battOk, onBattReq)
+            GuideCard()
+        }
+        SettingsPage.SYNC_VAULT -> VaultSyncCard(prefs, busy, onPickSyncFolder, onSyncFolderNow, onRestoreVaultFile, onUpdate)
+        SettingsPage.BACKUP_TRASH -> PortabilityAndTrashCard(busy, summary, activityCounts, trashCount, onImpBak, onExpBak, onImpTl, onOpenTrash)
     }
 }
 
@@ -305,37 +355,41 @@ private fun SettingsHubBody(
     onPickPage: (SettingsPage) -> Unit
 ) {
     SettingsPage.entries.forEach { page ->
-        val badge = when (page) {
-            SettingsPage.APPEARANCE -> "${prefs.themeMode.lowercase().replaceFirstChar { it.uppercase() }} • ${AccentOption.entries.firstOrNull { it.name == prefs.accentName }?.label ?: "KDE Purple"}"
-            SettingsPage.MAPS_3D -> if (prefs.physical3dTerrainMesh) "Terrain ${"%.1f".format(prefs.terrainExaggerationTenths / 10f)}x" else "Native 3D"
-            SettingsPage.COACHING -> if (prefs.voiceCoachEnabled) "Coach On" else "Muted"
-            SettingsPage.LOCK_DETECT -> if (!battOk) "Battery Action" else if (hcOk) "HC Linked" else "Ready"
-            SettingsPage.SYNC_VAULT -> if (prefs.syncFolderUri.isNotBlank()) "Vault Linked" else "Not Linked"
-            SettingsPage.BACKUP_TRASH -> if (trashCount > 0) "Trash ($trashCount)" else "${counts.runs + counts.walks + counts.cycles} Saved"
-        }
-        StrideCard(onClick = { onPickPage(page) }) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(page.accent.copy(alpha = 0.16f), RoundedCornerShape(10.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(page.icon, contentDescription = null, tint = page.accent, modifier = Modifier.size(22.dp))
-                }
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(page.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                    Text(page.subtitle, style = MaterialTheme.typography.bodySmall, color = KdeMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    StatusPill(badge, page.accent)
-                }
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = KdeMuted)
+        val badge = hubBadge(page, prefs, trashCount, battOk, hcOk, counts)
+        SettingsHubRow(page, badge) { onPickPage(page) }
+    }
+}
+
+private fun hubBadge(
+    page: SettingsPage,
+    prefs: CoachPreferences,
+    trashCount: Int,
+    battOk: Boolean,
+    hcOk: Boolean,
+    counts: QuadCounts
+): String = when (page) {
+    SettingsPage.APPEARANCE -> "${prefs.themeMode.lowercase().replaceFirstChar { it.uppercase() }} • ${AccentOption.entries.firstOrNull { it.name == prefs.accentName }?.label ?: "KDE Purple"}"
+    SettingsPage.MAPS_3D -> if (prefs.physical3dTerrainMesh) "Terrain ${"%.1f".format(prefs.terrainExaggerationTenths / 10f)}x" else "Native 3D"
+    SettingsPage.COACHING -> if (prefs.voiceCoachEnabled) "Coach On" else "Muted"
+    SettingsPage.LOCK_DETECT -> if (!battOk) "Battery Action" else if (hcOk) "HC Linked" else "Ready"
+    SettingsPage.SYNC_VAULT -> if (prefs.syncFolderUri.isNotBlank()) "Vault Linked" else "Not Linked"
+    SettingsPage.BACKUP_TRASH -> if (trashCount > 0) "Trash ($trashCount)" else "${counts.runs + counts.walks + counts.cycles} Saved"
+}
+
+@Composable
+private fun SettingsHubRow(page: SettingsPage, badge: String, onClick: () -> Unit) {
+    StrideCard(onClick = onClick) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                modifier = Modifier.size(40.dp).background(page.accent.copy(alpha = 0.16f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) { Icon(page.icon, contentDescription = null, tint = page.accent, modifier = Modifier.size(22.dp)) }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(page.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                Text(page.subtitle, style = MaterialTheme.typography.bodySmall, color = KdeMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
+            StatusPill(badge, page.accent)
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = KdeMuted)
         }
     }
 }
@@ -478,44 +532,54 @@ private fun SearchResultsBody(
     Text("${matched.size} MATCHING SETTINGS", style = MaterialTheme.typography.labelLarge, color = KdeMuted, fontWeight = FontWeight.Bold)
     matched.forEach { item ->
         when (item) {
-            is SearchResultEntry.ToggleEntry -> StrideCard {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    StatusPill(item.page.title, item.page.accent, onClick = { onJumpToPage(item.page) })
-                }
-                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text(item.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                        Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = KdeMuted)
-                    }
-                    Switch(checked = item.checked, onCheckedChange = item.onToggle)
-                }
-            }
-            is SearchResultEntry.BlockEntry -> {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    StatusPill("Section: ${item.page.title}", item.page.accent, onClick = { onJumpToPage(item.page) })
-                }
-                item.content()
-            }
+            is SearchResultEntry.ToggleEntry -> SearchToggleCard(item, onJumpToPage)
+            is SearchResultEntry.BlockEntry -> SearchBlockItem(item, onJumpToPage)
         }
     }
+}
+
+@Composable
+private fun SearchToggleCard(item: SearchResultEntry.ToggleEntry, onJumpToPage: (SettingsPage) -> Unit) {
+    StrideCard {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            StatusPill(item.page.title, item.page.accent, onClick = { onJumpToPage(item.page) })
+        }
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                Text(item.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = KdeMuted)
+            }
+            Switch(checked = item.checked, onCheckedChange = item.onToggle)
+        }
+    }
+}
+
+@Composable
+private fun SearchBlockItem(item: SearchResultEntry.BlockEntry, onJumpToPage: (SettingsPage) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        StatusPill("Section: ${item.page.title}", item.page.accent, onClick = { onJumpToPage(item.page) })
+    }
+    item.content()
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ThemeModeAccentCard(p: CoachPreferences, onUp: ((CoachPreferences) -> CoachPreferences) -> Unit) {
     val cc = FilterChipDefaults.filterChipColors(selectedContainerColor = KdePurple.copy(alpha = 0.24f), selectedLabelColor = KdePurple)
+    val setTheme: (String) -> Unit = { k -> onUp { it.copy(themeMode = k) } }
+    val setAcc: (String) -> Unit = { a -> onUp { it.copy(accentName = a) } }
     StrideCard {
         Text("Theme & Accent", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Text("Theme Mode", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("SYSTEM" to "System", "DARK" to "Dark", "LIGHT" to "Light").forEach { (k, lbl) ->
-                FilterChip(selected = p.themeMode == k, onClick = { onUp { it.copy(themeMode = k) } }, colors = cc, label = { Text(lbl, maxLines = 1, softWrap = false) })
+                FilterChip(selected = p.themeMode == k, onClick = { setTheme(k) }, colors = cc, label = { Text(lbl, maxLines = 1, softWrap = false) })
             }
         }
         Text("Accent Color", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             AccentOption.entries.forEach { acc ->
-                FilterChip(selected = p.accentName == acc.name, onClick = { onUp { it.copy(accentName = acc.name) } }, colors = cc, label = { Text(acc.label, maxLines = 1, softWrap = false) })
+                FilterChip(selected = p.accentName == acc.name, onClick = { setAcc(acc.name) }, colors = cc, label = { Text(acc.label, maxLines = 1, softWrap = false) })
             }
         }
     }
@@ -525,12 +589,13 @@ private fun ThemeModeAccentCard(p: CoachPreferences, onUp: ((CoachPreferences) -
 @Composable
 private fun MapStyleAttributionCard(p: CoachPreferences, onUp: ((CoachPreferences) -> CoachPreferences) -> Unit) {
     val cc = FilterChipDefaults.filterChipColors(selectedContainerColor = KdeSky.copy(alpha = 0.22f), selectedLabelColor = KdeSky)
+    val setStyle: (String) -> Unit = { k -> onUp { it.copy(mapStyleMode = k) } }
     StrideCard {
         Text("Map Appearance", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Text("Base Map Style", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("MATCH_THEME" to "Match Theme", "DARK" to "Dark", "LIGHT" to "Positron", "LIBERTY" to "Liberty").forEach { (k, lbl) ->
-                FilterChip(selected = p.mapStyleMode == k, onClick = { onUp { it.copy(mapStyleMode = k) } }, colors = cc, label = { Text(lbl, maxLines = 1, softWrap = false) })
+                FilterChip(selected = p.mapStyleMode == k, onClick = { setStyle(k) }, colors = cc, label = { Text(lbl, maxLines = 1, softWrap = false) })
             }
         }
         ToggleRow("Show Map Copyright on Previews", p.showMapAttribution) { v -> onUp { it.copy(showMapAttribution = v) } }
@@ -554,6 +619,7 @@ private fun Terrain3DSettingsCard(p: CoachPreferences, onUp: ((CoachPreferences)
 @Composable
 private fun TerrainExaggerationChips(p: CoachPreferences, onUp: ((CoachPreferences) -> CoachPreferences) -> Unit) {
     val cc = FilterChipDefaults.filterChipColors(selectedContainerColor = KdeSky.copy(alpha = 0.22f), selectedLabelColor = KdeSky)
+    val setExag: (Int) -> Unit = { tenths -> onUp { it.copy(terrainExaggerationTenths = tenths) } }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("3D Hill Exaggeration", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -561,7 +627,7 @@ private fun TerrainExaggerationChips(p: CoachPreferences, onUp: ((CoachPreferenc
                 FilterChip(
                     selected = p.terrainExaggerationTenths == tenths,
                     enabled = p.physical3dTerrainMesh,
-                    onClick = { onUp { it.copy(terrainExaggerationTenths = tenths) } },
+                    onClick = { setExag(tenths) },
                     colors = cc,
                     label = { Text(lbl, maxLines = 1, softWrap = false) }
                 )
@@ -586,12 +652,13 @@ private fun MapRenderSettingsCard(p: CoachPreferences, onUp: ((CoachPreferences)
 @Composable
 private fun PaceBaselineCoachingCard(p: CoachPreferences, onUp: ((CoachPreferences) -> CoachPreferences) -> Unit) {
     val cc = FilterChipDefaults.filterChipColors(selectedContainerColor = KdePurple.copy(alpha = 0.24f), selectedLabelColor = KdePurple)
+    val setBase: (String) -> Unit = { n -> onUp { it.copy(paceBaselineMode = n) } }
     StrideCard {
         Text("Pace & Telemetry Display", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Text("Pace Color Baseline", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             PaceBaselineMode.entries.forEach { m ->
-                FilterChip(selected = p.paceBaselineMode == m.name, onClick = { onUp { it.copy(paceBaselineMode = m.name) } }, colors = cc, label = { Text(m.label, maxLines = 1, softWrap = false) })
+                FilterChip(selected = p.paceBaselineMode == m.name, onClick = { setBase(m.name) }, colors = cc, label = { Text(m.label, maxLines = 1, softWrap = false) })
             }
         }
         ToggleRow("Slope-Adjusted Target Pace on Hills", p.slopeAdjustedPaceEnabled) { v -> onUp { it.copy(slopeAdjustedPaceEnabled = v) } }

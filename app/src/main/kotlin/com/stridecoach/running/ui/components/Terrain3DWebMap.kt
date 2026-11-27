@@ -72,7 +72,8 @@ internal class TerrainJsBridge(
     private val onReady: () -> Unit,
     private val onPan: () -> Unit,
     private val onTap: (Double, Double) -> Unit,
-    private val onUnsup: () -> Unit
+    private val onUnsup: () -> Unit,
+    private val onBearing: (Float) -> Unit
 ) {
     private val main = Handler(Looper.getMainLooper())
 
@@ -80,6 +81,7 @@ internal class TerrainJsBridge(
     @JavascriptInterface fun onUserPan() = main.post(onPan)
     @JavascriptInterface fun onMapTap(lat: Double, lon: Double) = main.post { onTap(lat, lon) }
     @JavascriptInterface fun onWebGlUnsupported() = main.post(onUnsup)
+    @JavascriptInterface fun onBearingChanged(deg: Double) = main.post { onBearing(deg.toFloat()) }
 }
 
 @Composable
@@ -116,9 +118,13 @@ internal fun Terrain3DWebMap(
     fitSidePx: Int = 0,
     hiBottomPx: Int = 0,
     recenterToken: Int = 0,
+    playing: Boolean = false,
+    northLockedInFollow: Boolean = false,
+    resetNorthToken: Int = 0,
     onUserManualPan: () -> Unit = {},
     onMapTap: ((LatLon) -> Unit)? = null,
-    onWebGlUnsupported: () -> Unit = {}
+    onWebGlUnsupported: () -> Unit = {},
+    onBearingChanged: ((Float) -> Unit)? = null
 ) {
     val ctx = LocalContext.current
     val owner = LocalLifecycleOwner.current
@@ -133,9 +139,10 @@ internal fun Terrain3DWebMap(
     val panCb = rememberUpdatedState(onUserManualPan)
     val tapCb = rememberUpdatedState(onMapTap)
     val unsupCb = rememberUpdatedState(onWebGlUnsupported)
+    val brgCb = rememberUpdatedState(onBearingChanged)
     val h = remember { TerrainMapHolder() }
     val wv = remember(ctx) {
-        makeWebView(ctx, bgHex, h, { panCb.value() }, { lat, lon -> tapCb.value?.invoke(LatLon(lat, lon)) }, { unsupCb.value() })
+        makeWebView(ctx, bgHex, h, { panCb.value() }, { lat, lon -> tapCb.value?.invoke(LatLon(lat, lon)) }, { unsupCb.value() }, { deg -> brgCb.value?.invoke(deg) })
     }
 
     BindWebLifecycle(owner, wv)
@@ -164,7 +171,8 @@ internal fun Terrain3DWebMap(
         update = { view ->
             val frameJson = buildFrameJson(
                 prep, replayHead, userLocation, showHead, showUserDot, colorByPace,
-                cameraMode, liveHeadingDeg, topCss, botCss, fitTopCss, fitBotCss, fitSideCss, recenterToken
+                cameraMode, liveHeadingDeg, topCss, botCss, fitTopCss, fitBotCss, fitSideCss,
+                recenterToken, playing, northLockedInFollow, resetNorthToken
             )
             enqueueScene(h, view, staticJson, frameJson)
         },
@@ -197,7 +205,8 @@ private fun makeWebView(
     h: TerrainMapHolder,
     onPan: () -> Unit,
     onTap: (Double, Double) -> Unit,
-    onUnsup: () -> Unit
+    onUnsup: () -> Unit,
+    onBearing: (Float) -> Unit
 ): WebView {
     val wv = WebView(ctx)
     wv.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
@@ -205,7 +214,7 @@ private fun makeWebView(
     wv.isVerticalScrollBarEnabled = false
     wv.isHorizontalScrollBarEnabled = false
     applyWebSettings(wv.settings)
-    wv.addJavascriptInterface(TerrainJsBridge({ onBridgeReady(h, wv) }, onPan, onTap, onUnsup), "StrideBridge")
+    wv.addJavascriptInterface(TerrainJsBridge({ onBridgeReady(h, wv) }, onPan, onTap, onUnsup, onBearing), "StrideBridge")
     wv.webViewClient = assetWebClient(ctx)
     wv.loadDataWithBaseURL("https://stridecoach.local/", loadTerrainHtml(ctx, bgHex), "text/html", "UTF-8", null)
     return wv
@@ -353,7 +362,10 @@ private fun buildFrameJson(
     fitTopCss: Int,
     fitBotCss: Int,
     fitSideCss: Int,
-    recenter: Int
+    recenter: Int,
+    playing: Boolean,
+    northLocked: Boolean,
+    resetNorth: Int
 ): String {
     val vp = prep.pts
     val obj = JSONObject()
@@ -363,6 +375,9 @@ private fun buildFrameJson(
         .put("frac", headProgressFrac(prep, head))
         .put("camMode", cam.name)
         .put("recenter", recenter)
+        .put("playing", playing)
+        .put("northLocked", northLocked)
+        .put("resetNorth", resetNorth)
         .put("topCss", topCss)
         .put("botCss", botCss)
         .put("fitTopClearCss", fitTopCss)
