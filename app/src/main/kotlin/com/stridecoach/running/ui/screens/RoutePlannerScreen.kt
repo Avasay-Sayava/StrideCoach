@@ -34,6 +34,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.stridecoach.running.core.data.repository.CoachPreferences
@@ -72,6 +73,8 @@ fun RoutePlannerScreen(
     var is3d by remember(prefs.defaultMap3dEnabled) { mutableStateOf(prefs.defaultMap3dEnabled) }
     var routing by remember { mutableStateOf(false) }
     var recenterTick by remember { mutableIntStateOf(0) }
+    var topOverlayPx by remember { mutableIntStateOf(0) }
+    var bottomDockPx by remember { mutableIntStateOf(0) }
 
     val fullPath = remember(legs.size) { flattenLegs(legs) }
     val waypoints = remember(legs.size) { legs.map { it.end } }
@@ -108,10 +111,14 @@ fun RoutePlannerScreen(
             is3dMode = is3d,
             show3dBuildings = prefs.show3dBuildings,
             showTerrainHillshade = prefs.showTerrainHillshade,
+            physical3dTerrainMesh = prefs.physical3dTerrainMesh,
+            terrainExaggeration = prefs.terrainExaggerationTenths / 10f,
             lockAutoFit = true,
             preloadTiles = prefs.preloadNearbyTiles,
             mapStyleMode = prefs.mapStyleMode,
             fallbackCenter = fallbackCenter,
+            topOcclusionPx = topOverlayPx,
+            bottomOcclusionPx = bottomDockPx,
             bottomPadDp = 190,
             recenterToken = recenterTick,
             onUserManualPan = { camMode = MapCameraMode.FREE_PAN },
@@ -124,6 +131,7 @@ fun RoutePlannerScreen(
             hasPath = legs.size >= 2,
             camMode = camMode,
             is3d = is3d,
+            onMeasuredHeight = { topOverlayPx = it },
             onBack = onBack,
             onPickMode = { mode ->
                 camMode = mode
@@ -141,7 +149,9 @@ fun RoutePlannerScreen(
             onLoop = { legs.firstOrNull()?.end?.let(::appendWaypoint) },
             onClear = { legs.clear() },
             onRun = { onLaunchRoute(fullPath) },
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .onGloballyPositioned { coords -> bottomDockPx = coords.size.height }
         )
     }
 }
@@ -153,6 +163,7 @@ private fun PlannerTopBar(
     hasPath: Boolean,
     camMode: MapCameraMode,
     is3d: Boolean,
+    onMeasuredHeight: (Int) -> Unit,
     onBack: () -> Unit,
     onPickMode: (MapCameraMode) -> Unit,
     onToggle3d: () -> Unit,
@@ -160,7 +171,10 @@ private fun PlannerTopBar(
 ) {
     val topPad = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 8.dp
     Column(
-        modifier = Modifier.fillMaxWidth().padding(top = topPad, start = 12.dp, end = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coords -> onMeasuredHeight(coords.size.height) }
+            .padding(top = topPad, start = 12.dp, end = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(

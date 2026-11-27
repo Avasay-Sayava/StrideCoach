@@ -36,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -135,7 +136,15 @@ fun LoadTimeMachineScreen(
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(rangeLabel, style = MaterialTheme.typography.titleSmall.merge(TabularNumberStyle), fontWeight = FontWeight.Bold)
                             if (offsetSteps > 0) {
-                                Text("Tap Today to jump back", style = MaterialTheme.typography.labelSmall, color = KdeSky, modifier = Modifier.clickable { offsetSteps = 0 })
+                                Text(
+                                    "Tap Today to jump back",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = KdeSky,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .clickable { offsetSteps = 0 }
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
                             }
                         }
                         IconButton(onClick = { if (offsetSteps > 0) offsetSteps-- }, enabled = offsetSteps > 0) {
@@ -327,7 +336,11 @@ fun PersonalRecordsDetailScreen(
                         Text("VOLUME MILESTONES", style = MaterialTheme.typography.labelLarge, color = KdeMuted, fontWeight = FontWeight.Bold)
                         longestRun?.let { lr ->
                             Row(
-                                modifier = Modifier.fillMaxWidth().clickable { onSelectRun(lr.id) }.padding(vertical = 4.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onSelectRun(lr.id) }
+                                    .padding(horizontal = 6.dp, vertical = 5.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("Longest Run (${lr.name})", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -336,7 +349,11 @@ fun PersonalRecordsDetailScreen(
                         }
                         longestWalk?.let { lw ->
                             Row(
-                                modifier = Modifier.fillMaxWidth().clickable { onSelectRun(lw.id) }.padding(vertical = 4.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onSelectRun(lw.id) }
+                                    .padding(horizontal = 6.dp, vertical = 5.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("Longest Walk (${lw.name})", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -345,7 +362,11 @@ fun PersonalRecordsDetailScreen(
                         }
                         highestClimb?.let { hc ->
                             Row(
-                                modifier = Modifier.fillMaxWidth().clickable { onSelectRun(hc.id) }.padding(vertical = 4.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onSelectRun(hc.id) }
+                                    .padding(horizontal = 6.dp, vertical = 5.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("Biggest Climb (${hc.name})", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -377,7 +398,8 @@ fun PersonalRecordsDetailScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(KdeCardAlt.copy(alpha = if (idx == 0) 0.7f else 0.35f), RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(KdeCardAlt.copy(alpha = if (idx == 0) 0.7f else 0.35f))
                                 .clickable { onSelectRun(entry.runId) }
                                 .padding(horizontal = 10.dp, vertical = 7.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -431,7 +453,7 @@ private fun HistoricalRunMiniRow(r: RunRecord, onClick: () -> Unit) {
             Instant.ofEpochMilli(r.startTimestampMillis).atZone(ZoneId.systemDefault())
         )
     }
-    StrideCard(modifier = Modifier.clickable { onClick() }) {
+    StrideCard(onClick = onClick) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                 Text(r.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)

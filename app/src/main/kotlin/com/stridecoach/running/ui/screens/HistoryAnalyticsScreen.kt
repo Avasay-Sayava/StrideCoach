@@ -2,7 +2,6 @@ package com.stridecoach.running.ui.screens
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -67,6 +67,7 @@ import com.stridecoach.running.core.domain.model.formatPace
 import com.stridecoach.running.core.domain.model.formatSpeedKmh
 import com.stridecoach.running.ui.CoachUiState
 import com.stridecoach.running.ui.TelemetrySummary
+import com.stridecoach.running.ui.components.RenameExerciseDialog
 import com.stridecoach.running.ui.components.StaticRouteMapThumbnail
 import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.StrideCard
@@ -128,6 +129,7 @@ fun HistoryAnalyticsScreen(
     state: CoachUiState,
     onSelectRun: (String) -> Unit,
     onTrashRun: (String) -> Unit,
+    onRenameRun: (String, String) -> Unit,
     onOpenTrash: () -> Unit,
     onOpenLoadHistory: () -> Unit,
     onOpenPaceZones: () -> Unit,
@@ -153,7 +155,8 @@ fun HistoryAnalyticsScreen(
                 state = state,
                 listState = historyScrollState,
                 onSelectRun = onSelectRun,
-                onTrashRun = onTrashRun
+                onTrashRun = onTrashRun,
+                onRenameRun = onRenameRun
             )
         }
     }
@@ -177,9 +180,7 @@ private fun StyleCHeader(
             Text("Telemetry", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (trashCnt > 0) {
-                    Box(modifier = Modifier.clickable { onOpenTrash() }) {
-                        StatusPill("Trash ($trashCnt)", PaceTooSlow)
-                    }
+                    StatusPill("Trash ($trashCnt)", PaceTooSlow, onClick = onOpenTrash)
                 }
                 StatusPill(pillTxt, KdePurple)
             }
@@ -265,13 +266,15 @@ private fun HistoryFeed(
     state: CoachUiState,
     listState: LazyListState,
     onSelectRun: (String) -> Unit,
-    onTrashRun: (String) -> Unit
+    onTrashRun: (String) -> Unit,
+    onRenameRun: (String, String) -> Unit
 ) {
     val runs = state.runs
     val tel = state.telemetry
     val mapStyle = resolveMapStyleUri(state.preferences.mapStyleMode, StrideThemeState.isLight)
     var filters by remember { mutableStateOf(HistoryFilterState()) }
     var showAdv by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<RunRecord?>(null) }
     val nowMs = remember(runs.size) { System.currentTimeMillis() }
     val filtered = remember(runs, filters) { applyFilters(runs, filters, nowMs) }
 
@@ -323,10 +326,21 @@ private fun HistoryFeed(
                     styleUri = mapStyle,
                     showAttribution = state.preferences.showMapAttribution,
                     onSelect = onSelectRun,
+                    onRename = { renameTarget = run },
                     onTrash = { onTrashRun(run.id) }
                 )
             }
         }
+    }
+    renameTarget?.let { target ->
+        RenameExerciseDialog(
+            currentName = target.name,
+            onDismiss = { renameTarget = null },
+            onConfirm = { newName ->
+                onRenameRun(target.id, newName)
+                renameTarget = null
+            }
+        )
     }
 }
 
@@ -496,7 +510,7 @@ private fun WeeklyStackedLoadCard(
     onOpenHistory: () -> Unit
 ) {
     var mode by remember { mutableIntStateOf(0) }
-    StrideCard(modifier = Modifier.clickable { onOpenHistory() }) {
+    StrideCard(onClick = onOpenHistory) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -509,13 +523,7 @@ private fun WeeklyStackedLoadCard(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                 LegendDot("Run", KdePurple)
                 LegendDot("Walk", KdeSky)
-                Text(
-                    if (mode == 0) "7D" else "6W",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = KdePurple,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable { mode = (mode + 1) % 2 }
-                )
+                StatusPill(if (mode == 0) "7D" else "6W", KdePurple, onClick = { mode = (mode + 1) % 2 })
             }
         }
         val items = if (mode == 0) {
@@ -582,7 +590,7 @@ private fun PaceDistributionCard(
     baselinePaceSec: Int,
     onOpenZones: () -> Unit
 ) {
-    StrideCard(modifier = Modifier.clickable { onOpenZones() }) {
+    StrideCard(onClick = onOpenZones) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("PACE ZONES", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
@@ -621,7 +629,7 @@ private fun LatestRunCard(
     showAttribution: Boolean,
     onSelect: (String) -> Unit
 ) {
-    StrideCard(modifier = Modifier.clickable { onSelect(r.id) }) {
+    StrideCard(onClick = { onSelect(r.id) }) {
         Text("LATEST • ${r.name.uppercase()}", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = KdeMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         RunPreviewHeaderMetrics(r, showSpeed)
         if (r.hasTrack()) {
@@ -637,12 +645,13 @@ private fun RunTelemetryCard(
     styleUri: String,
     showAttribution: Boolean,
     onSelect: (String) -> Unit,
+    onRename: () -> Unit,
     onTrash: () -> Unit
 ) {
     val dt = remember(r.startTimestampMillis) {
         CARD_DATE_FMT.format(Instant.ofEpochMilli(r.startTimestampMillis))
     }
-    StrideCard(modifier = Modifier.clickable { onSelect(r.id) }) {
+    StrideCard(onClick = { onSelect(r.id) }) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
                 Text(r.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -654,6 +663,9 @@ private fun RunTelemetryCard(
                     if (r.activityKind == ActivityKind.RUNNING) KdePurple else KdeSky
                 )
                 if (r.isSnapped) StatusPill("Snapped", PaceOnTarget)
+                IconButton(onClick = onRename, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = "Rename Exercise", tint = KdeMuted, modifier = Modifier.size(17.dp))
+                }
                 IconButton(onClick = onTrash, modifier = Modifier.size(30.dp)) {
                     Icon(Icons.Default.DeleteOutline, contentDescription = "Move to Trash", tint = KdeMuted, modifier = Modifier.size(18.dp))
                 }
@@ -679,7 +691,7 @@ private fun RunPreviewHeaderMetrics(r: RunRecord, showSpeed: Boolean) {
 
 @Composable
 private fun PersonalRecordsCard(prs: List<PersonalRecord>, onOpenPrs: () -> Unit) {
-    StrideCard(modifier = Modifier.clickable { onOpenPrs() }) {
+    StrideCard(onClick = onOpenPrs) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("PERSONAL RECORDS", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Open PR Progression", tint = KdeMuted, modifier = Modifier.size(18.dp))

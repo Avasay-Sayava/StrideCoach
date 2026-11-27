@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Palette
@@ -47,6 +48,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RangeSlider
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -60,11 +62,13 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -72,6 +76,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -98,6 +103,7 @@ import com.stridecoach.running.core.domain.model.formatPace
 import com.stridecoach.running.core.domain.model.formatSpeedKmh
 import com.stridecoach.running.ui.components.FloatingMapIconButton
 import com.stridecoach.running.ui.components.MapCameraMode
+import com.stridecoach.running.ui.components.RenameExerciseDialog
 import com.stridecoach.running.ui.components.StatusPill
 import com.stridecoach.running.ui.components.TelemetryStatStrip
 import com.stridecoach.running.ui.components.TopTelemetryMapHud
@@ -114,6 +120,7 @@ import com.stridecoach.running.ui.theme.PaceTooFast
 import com.stridecoach.running.ui.theme.PaceTooSlow
 import com.stridecoach.running.ui.theme.TabularNumberStyle
 import com.stridecoach.running.ui.theme.paceZoneColor
+import kotlinx.coroutines.launch
 import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -134,6 +141,7 @@ fun RunDetailMapScreen(
     onSnapAllGreenery: (Boolean) -> Unit,
     onFetchDemElevation: () -> Unit,
     onMoveToTrash: () -> Unit,
+    onRenameRun: (String) -> Unit,
     onBack: () -> Unit,
     onTrimRange: (Long, Long) -> Unit,
     onExportGpx: () -> Unit
@@ -172,7 +180,9 @@ fun RunDetailMapScreen(
     var trimRange by remember(run.id, run.durationMillis) { mutableStateOf(0f..1f) }
     var hiRange by remember(run.id) { mutableStateOf<IntRange?>(null) }
     var hiTrigger by remember(run.id) { mutableIntStateOf(0) }
+    var showRename by remember(run.id) { mutableStateOf(false) }
     var containerHeightPx by remember { mutableIntStateOf(0) }
+    var topOverlayPx by remember { mutableIntStateOf(0) }
     LaunchedEffect(run.encodedPolyline, run.isSnapped) { hiRange = null }
 
     val totalMs = pts.lastOrNull()?.elapsedMillis?.coerceAtLeast(1_000L) ?: run.durationMillis.coerceAtLeast(1_000L)
@@ -206,8 +216,11 @@ fun RunDetailMapScreen(
         pts.indexOfFirst { it.elapsedMillis >= cutMs }.takeIf { it in 1 until pts.lastIndex }
     } else null
 
+    val density = LocalDensity.current
     val navBarPad = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val peekSheetPx = with(density) { (204.dp + navBarPad).roundToPx() }
     val scaffoldState = rememberBottomSheetScaffoldState()
+    val scope = rememberCoroutineScope()
     val sheetOffsetPx = runCatching { scaffoldState.bottomSheetState.requireOffset() }.getOrNull()
     val bottomOcclusionPx = if (sheetOffsetPx != null && containerHeightPx > 0) {
         (containerHeightPx - sheetOffsetPx).roundToInt().coerceIn(0, (containerHeightPx * 0.72f).toInt())
@@ -234,8 +247,6 @@ fun RunDetailMapScreen(
                 prog = prog,
                 curMs = curMs,
                 totalMs = totalMs,
-                headPace = replayHead?.paceSec ?: run.paceSecondsPerKm,
-                headSpeedKmh = replayHead?.speedKmh ?: if (run.paceSecondsPerKm > 0) 3600f / run.paceSecondsPerKm else 0f,
                 sheetTab = sheetTab,
                 evals = evals,
                 segs = segs,
@@ -256,11 +267,14 @@ fun RunDetailMapScreen(
                 onScrubDone = { scrubbing = false },
                 onTab = { sheetTab = it },
                 onHighlight = { rng ->
-                    if (hiRange == rng) {
+                    val isExpanded = scaffoldState.bottomSheetState.currentValue == SheetValue.Expanded
+                    if (hiRange == rng && !isExpanded) {
                         hiRange = null
                     } else {
                         hiRange = rng
                         hiTrigger++
+                        camMode = MapCameraMode.FREE_PAN
+                        scope.launch { runCatching { scaffoldState.bottomSheetState.partialExpand() } }
                     }
                 },
                 onTrimRange = { trimRange = it },
@@ -295,14 +309,17 @@ fun RunDetailMapScreen(
                 is3dMode = is3d,
                 show3dBuildings = prefs.show3dBuildings,
                 showTerrainHillshade = prefs.showTerrainHillshade,
-                show3dRibbon = prefs.show3dRouteRibbon,
+                physical3dTerrainMesh = prefs.physical3dTerrainMesh,
+                terrainExaggeration = prefs.terrainExaggerationTenths / 10f,
                 keepCenteredOnSheetDrag = prefs.keepMapCenteredOnSheetDrag,
                 preloadTiles = prefs.preloadNearbyTiles,
                 mapStyleMode = prefs.mapStyleMode,
                 liveHeadingDeg = replayHead?.bearingDeg,
+                topOcclusionPx = topOverlayPx,
                 bottomOcclusionPx = bottomOcclusionPx,
-                topHudDp = if (prefs.showTopMapHud) 156 else 118,
-                bottomPadDp = 220,
+                highlightBottomOcclusionPx = peekSheetPx,
+                topHudDp = if (prefs.showTopMapHud) 202 else 124,
+                bottomPadDp = 268,
                 recenterToken = recenterTick,
                 onUserManualPan = { camMode = MapCameraMode.FREE_PAN },
                 modifier = Modifier.fillMaxSize()
@@ -318,10 +335,12 @@ fun RunDetailMapScreen(
                 colorByPace = colorByPace,
                 camMode = camMode,
                 is3d = is3d,
+                onMeasuredHeight = { topOverlayPx = it },
                 onBack = onBack,
                 onToggleColor = { colorByPace = !colorByPace },
                 onExportGpx = onExportGpx,
                 onTrash = onMoveToTrash,
+                onOpenRename = { showRename = true },
                 onPickMode = { mode ->
                     camMode = mode
                     if (mode == MapCameraMode.FIT_ROUTE || mode == MapCameraMode.FOLLOW_RUNNER) {
@@ -331,6 +350,16 @@ fun RunDetailMapScreen(
                 onToggle3d = { is3d = !is3d }
             )
         }
+    }
+    if (showRename) {
+        RenameExerciseDialog(
+            currentName = run.name,
+            onDismiss = { showRename = false },
+            onConfirm = { newName ->
+                showRename = false
+                onRenameRun(newName)
+            }
+        )
     }
 }
 
@@ -346,16 +375,21 @@ private fun DetailMapControlsOverlay(
     colorByPace: Boolean,
     camMode: MapCameraMode,
     is3d: Boolean,
+    onMeasuredHeight: (Int) -> Unit,
     onBack: () -> Unit,
     onToggleColor: () -> Unit,
     onExportGpx: () -> Unit,
     onTrash: () -> Unit,
+    onOpenRename: () -> Unit,
     onPickMode: (MapCameraMode) -> Unit,
     onToggle3d: () -> Unit
 ) {
     val topPad = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 8.dp
     Column(
-        modifier = Modifier.fillMaxWidth().padding(top = topPad, start = 12.dp, end = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coords -> onMeasuredHeight(coords.size.height) }
+            .padding(top = topPad, start = 12.dp, end = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(
@@ -365,20 +399,33 @@ private fun DetailMapControlsOverlay(
         ) {
             FloatingMapIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
             Surface(
+                onClick = onOpenRename,
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(12.dp),
                 color = KdeCardBg.copy(alpha = 0.90f),
                 border = BorderStroke(1.dp, KdeBorder)
             ) {
-                Text(
-                    text = run.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = KdeText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = run.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = KdeText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Rename Exercise",
+                        tint = KdeMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
             FloatingMapIconButton(Icons.Default.Palette, "Pace colors", onToggleColor, if (colorByPace) KdePurple else KdeMuted)
             FloatingMapIconButton(Icons.Default.Share, "Export GPX", onExportGpx, KdeSky)
@@ -442,10 +489,11 @@ fun MapFocusControlBar(
                     MapCameraMode.FOLLOW_RUNNER -> Icons.Default.MyLocation
                     MapCameraMode.FREE_PAN -> Icons.Default.Explore
                 }
-                Surface(
-                    shape = RoundedCornerShape(999.dp),
-                    color = if (active) KdePurple.copy(alpha = 0.28f) else Color.Transparent,
-                    modifier = Modifier.clickable { onPickMode(m) }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (active) KdePurple.copy(alpha = 0.28f) else Color.Transparent)
+                        .clickable { onPickMode(m) }
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
@@ -467,10 +515,11 @@ fun MapFocusControlBar(
                 }
             }
             Box(modifier = Modifier.size(width = 1.dp, height = 16.dp).background(KdeBorder))
-            Surface(
-                shape = RoundedCornerShape(999.dp),
-                color = if (is3d) KdeSky.copy(alpha = 0.25f) else Color.Transparent,
-                modifier = Modifier.clickable { onToggle3d() }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(if (is3d) KdeSky.copy(alpha = 0.25f) else Color.Transparent)
+                    .clickable { onToggle3d() }
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
@@ -506,8 +555,6 @@ private fun RunDetailSheetBody(
     prog: Float,
     curMs: Long,
     totalMs: Long,
-    headPace: Int,
-    headSpeedKmh: Float,
     sheetTab: Int,
     evals: List<SplitEvaluation>,
     segs: List<DetectedSegment>,
@@ -541,8 +588,7 @@ private fun RunDetailSheetBody(
             prog = prog,
             curMs = curMs,
             totalMs = totalMs,
-            livePace = headPace,
-            liveSpeedKmh = headSpeedKmh,
+            wholeRunSummary = "${formatPace(run.paceSecondsPerKm)}/km • ${run.caloriesBurned} kcal",
             speedSlider = speedSlider,
             speedMult = speedMult,
             onTogglePlay = onTogglePlay,
@@ -551,7 +597,7 @@ private fun RunDetailSheetBody(
             onSpeedSlider = onSpeedSlider,
             onCycleSpeed = onCycleSpeed
         )
-        LiveReplayTelemetryStrip(run, replayHead, evals.size)
+        WholeRunTelemetryStrip(run)
         ActionTabsRow(sheetTab, onTab)
         val activeSegIdx = replayHead?.elapsedMs?.let { t -> segs.indexOfFirst { t in it.startMs..it.endMs } }
         when (sheetTab) {
@@ -565,29 +611,17 @@ private fun RunDetailSheetBody(
 }
 
 @Composable
-private fun LiveReplayTelemetryStrip(run: RunRecord, head: ReplayHead?, splitCount: Int) {
-    val speedTxt = if (head != null) "%.1f km/h".format(head.speedKmh) else formatSpeedKmh(run.paceSecondsPerKm)
-    val avgPaceSec = head?.avgPaceSoFarSec?.takeIf { it > 0 } ?: run.paceSecondsPerKm
-    val avgPaceTxt = "${formatPace(avgPaceSec)}/km"
-    val midItem = if (head?.altitudeM != null) {
-        "${head.altitudeM!!.roundToInt()}m (${"%+.0f".format(head.gradePct)}%)" to "Live Elev"
-    } else if (head != null && head.cadenceSpm > 0) {
-        "${head.cadenceSpm} spm" to "Cadence"
-    } else {
-        val km = head?.currentKm ?: splitCount.coerceAtLeast(1)
-        "KM $km" to if (head != null) "Live Split" else "Splits"
-    }
-    val calVal = if (head != null && run.distanceMeters > 0) {
-        ((head.distM / run.distanceMeters) * run.caloriesBurned).roundToInt()
-    } else {
-        run.caloriesBurned
-    }
+private fun WholeRunTelemetryStrip(run: RunRecord) {
+    val speedTxt = formatSpeedKmh(run.paceSecondsPerKm)
+    val avgPaceTxt = "${formatPace(run.paceSecondsPerKm)}/km"
+    val distTxt = "${"%.2f".format(run.km())} km"
+    val tail = if (run.elevGainM > 0) "+${run.elevGainM}m" to "Elev Gain" else "${run.caloriesBurned} kcal" to "Calories"
     TelemetryStatStrip(
         items = listOf(
-            speedTxt to "Speed",
+            distTxt to "Total Dist",
             avgPaceTxt to "Avg Pace",
-            midItem,
-            "$calVal kcal" to "Calories"
+            speedTxt to "Avg Speed",
+            tail
         )
     )
 }
@@ -598,8 +632,7 @@ private fun ReplayDockRow(
     prog: Float,
     curMs: Long,
     totalMs: Long,
-    livePace: Int,
-    liveSpeedKmh: Float,
+    wholeRunSummary: String,
     speedSlider: Float,
     speedMult: Float,
     onTogglePlay: () -> Unit,
@@ -609,8 +642,8 @@ private fun ReplayDockRow(
     onCycleSpeed: () -> Unit
 ) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Surface(shape = CircleShape, color = KdePurple, modifier = Modifier.size(44.dp)) {
-            IconButton(onClick = onTogglePlay) {
+        Surface(onClick = onTogglePlay, shape = CircleShape, color = KdePurple, modifier = Modifier.size(44.dp)) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, "Replay", tint = Color.White)
             }
         }
@@ -624,7 +657,7 @@ private fun ReplayDockRow(
             )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("${formatDuration(curMs)} / ${formatDuration(totalMs)}", style = MaterialTheme.typography.labelMedium.merge(TabularNumberStyle), color = KdeMuted)
-                Text("${formatPace(livePace)}/km • ${"%.1f".format(liveSpeedKmh)} km/h", style = MaterialTheme.typography.labelMedium.merge(TabularNumberStyle), color = KdeText, fontWeight = FontWeight.Bold)
+                Text(wholeRunSummary, style = MaterialTheme.typography.labelMedium.merge(TabularNumberStyle), color = KdeText, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -645,7 +678,9 @@ private fun ReplayDockRow(
             shape = RoundedCornerShape(999.dp),
             color = KdeSky.copy(alpha = 0.16f),
             border = BorderStroke(1.dp, KdeSky.copy(alpha = 0.45f)),
-            modifier = Modifier.clickable { onCycleSpeed() }
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .clickable { onCycleSpeed() }
         ) {
             Text(
                 text = formatSpeedMult(speedMult),
@@ -847,7 +882,8 @@ private fun SnapStreetsTogglePanel(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(KdeCardAlt.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(8.dp))
+                .background(KdeCardAlt.copy(alpha = 0.5f))
                 .clickable {
                     val s = sec.startIdx.coerceIn(0, pts.lastIndex.coerceAtLeast(0))
                     val e = sec.endIdx.coerceIn(s, pts.lastIndex.coerceAtLeast(s))
@@ -916,7 +952,8 @@ private fun SplitsTable(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(rowBg, RoundedCornerShape(6.dp))
+                .clip(RoundedCornerShape(6.dp))
+                .background(rowBg)
                 .clickable { findKmRange(pts, ev.split.splitNumber)?.let(onSelect) }
                 .padding(horizontal = 8.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -960,7 +997,8 @@ private fun SegmentsList(segs: List<DetectedSegment>, pts: List<TrackPoint>, act
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(if (isActive) color.copy(alpha = 0.22f) else KdeCardAlt.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (isActive) color.copy(alpha = 0.22f) else KdeCardAlt.copy(alpha = 0.45f))
                 .clickable { findTimeRange(pts, sg.startMs, sg.endMs)?.let(onSelect) }
                 .padding(10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,

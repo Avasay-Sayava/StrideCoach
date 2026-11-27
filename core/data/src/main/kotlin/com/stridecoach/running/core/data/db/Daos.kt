@@ -76,6 +76,9 @@ interface RunDao {
     @Query("UPDATE runs SET deletedAtMillis = :deletedAt WHERE id = :runId")
     suspend fun setRunDeleted(runId: String, deletedAt: Long?)
 
+    @Query("UPDATE runs SET name = :name WHERE id = :runId")
+    suspend fun updateRunName(runId: String, name: String)
+
     @Query("UPDATE runs SET deletedAtMillis = NULL WHERE deletedAtMillis IS NOT NULL")
     suspend fun restoreAllTrashedRuns()
 

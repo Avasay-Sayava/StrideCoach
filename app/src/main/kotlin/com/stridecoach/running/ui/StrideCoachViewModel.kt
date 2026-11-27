@@ -288,6 +288,19 @@ class StrideCoachViewModel(
         }
     }
 
+    fun renameRun(ctx: Context, id: String, newName: String) {
+        val clean = newName.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            repo.renameRun(id, clean)
+            if (selFlow.value?.id == id) {
+                selFlow.value = selFlow.value?.copy(name = clean)
+            }
+            maybeWriteVault(ctx)
+            postBanner("Renamed exercise to \"$clean\".")
+        }
+    }
+
     fun restoreRunFromTrash(id: String) {
         viewModelScope.launch {
             repo.restoreRun(id)

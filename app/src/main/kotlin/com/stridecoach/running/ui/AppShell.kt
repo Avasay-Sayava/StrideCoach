@@ -14,6 +14,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -30,6 +31,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -45,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -149,6 +152,7 @@ fun AppShell(vm: StrideCoachViewModel, win: Window) {
                 onSnapAllGreenery = vm::setSnapAllGreenery,
                 onFetchDemElevation = { vm.enrichSelectedRunElevation(silent = false) },
                 onMoveToTrash = { vm.moveRunToTrash(run.id) },
+                onRenameRun = { newName -> vm.renameRun(ctx, run.id, newName) },
                 onBack = vm::clearSelectedRun,
                 onTrimRange = vm::trimSelectedRunRange,
                 onExportGpx = io.gpx
@@ -374,21 +378,27 @@ private fun NavBar(t: Int, onPick: (Int) -> Unit) {
         "Stats" to Icons.Default.BarChart,
         "Settings" to Icons.Default.Settings
     )
-    NavigationBar(containerColor = KdeNavBg) {
-        list.forEachIndexed { i, (lbl, ico) ->
-            NavigationBarItem(
-                selected = t == i,
-                onClick = { onPick(i) },
-                icon = { Icon(ico, contentDescription = lbl) },
-                label = { Text(lbl, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = KdePurple,
-                    selectedTextColor = KdePurple,
-                    indicatorColor = KdePurple.copy(alpha = 0.18f),
-                    unselectedIconColor = KdeMuted,
-                    unselectedTextColor = KdeMuted
+    Surface(color = KdeNavBg, modifier = Modifier.fillMaxWidth()) {
+        NavigationBar(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            containerColor = Color.Transparent,
+            tonalElevation = 0.dp
+        ) {
+            list.forEachIndexed { i, (lbl, ico) ->
+                NavigationBarItem(
+                    selected = t == i,
+                    onClick = { onPick(i) },
+                    icon = { Icon(ico, contentDescription = lbl) },
+                    label = { Text(lbl, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = KdePurple,
+                        selectedTextColor = KdePurple,
+                        indicatorColor = KdePurple.copy(alpha = 0.18f),
+                        unselectedIconColor = KdeMuted,
+                        unselectedTextColor = KdeMuted
+                    )
                 )
-            )
+            }
         }
     }
 }
@@ -446,6 +456,7 @@ private fun TabBody(
             state = st,
             onSelectRun = vm::loadRunDetail,
             onTrashRun = vm::moveRunToTrash,
+            onRenameRun = { id, newName -> vm.renameRun(c, id, newName) },
             onOpenTrash = onOpenTrash,
             onOpenLoadHistory = { onOpenDrill(StatsDrillScreen.LOAD_HISTORY) },
             onOpenPaceZones = { onOpenDrill(StatsDrillScreen.PACE_ZONES) },

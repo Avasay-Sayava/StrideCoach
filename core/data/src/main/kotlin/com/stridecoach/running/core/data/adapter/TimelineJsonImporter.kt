@@ -22,7 +22,22 @@ import java.time.ZoneId
 import kotlin.math.roundToInt
 
 @Serializable
-private data class TimelineRoot(val semanticSegments: List<SegDto> = emptyList())
+private data class TimelineRoot(
+    val semanticSegments: List<SegDto> = emptyList(),
+    val rawSignals: List<RawSignalDto> = emptyList()
+)
+
+@Serializable
+private data class RawSignalDto(val position: RawPositionDto? = null)
+
+@Serializable
+private data class RawPositionDto(
+    @kotlinx.serialization.SerialName("LatLng")
+    val latLngUpper: String? = null,
+    val latLng: String? = null,
+    val point: String? = null,
+    val timestamp: String? = null
+)
 
 @Serializable
 private data class SegDto(
@@ -144,7 +159,10 @@ private class MultiActivityCollector(
         val logs = byDay.entries.sortedBy { it.key }.map { (day, m) ->
             WalkLog(day, m.toInt(), WalkSource.TIMELINE_IMPORT, 0, nowMs)
         }
-        val enriched = records.map { r -> attachPathIfAvailable(r) }
+        val sortedPath = pathPoints
+            .filter { it.ms != null }
+            .sortedBy { it.ms!! }
+        val enriched = records.map { r -> attachPathIfAvailable(r, sortedPath) }
         return TimelineImportSummary(
             walkLogs = logs,
             filteredGlitches = glitches,
@@ -158,18 +176,83 @@ private class MultiActivityCollector(
         )
     }
 
-    private fun attachPathIfAvailable(rec: RunRecord): RunRecord {
-        if (rec.encodedPolyline.isNotBlank() || pathPoints.isEmpty()) return rec
+    private fun attachPathIfAvailable(rec: RunRecord, sortedPath: List<ParsedPathSample>): RunRecord {
+        if (rec.trackPoints.size > 2 || sortedPath.isEmpty()) return rec
         val t0 = rec.startTimestampMillis
         val t1 = t0 + rec.durationMillis
-        val matched = pathPoints.filter { p -> val ms = p.ms; ms != null && ms in (t0 - 120_000L)..(t1 + 120_000L) }
-        if (matched.size < 2) return rec
-        val poly = EncodedPolylineCodec.encode(matched.map { it.ll })
-        val pts = matched.mapIndexed { idx, p ->
-            val el = ((p.ms ?: t0) - t0).coerceAtLeast(0L)
-            TrackPoint(idx, p.ms ?: t0, el, p.ll.latitude, p.ll.longitude)
+        var matched = sliceTimeRange(sortedPath, t0, t1)
+        if (matched.size < 2) {
+            matched = sliceTimeRange(sortedPath, t0 - 120_000L, t1 + 120_000L)
         }
+        if (matched.isEmpty()) return rec
+
+        val rawSamples = mutableListOf<ParsedPathSample>()
+        val startPt = rec.trackPoints.firstOrNull()?.let { LatLon(it.latitude, it.longitude) }
+        val endPt = rec.trackPoints.lastOrNull()?.let { LatLon(it.latitude, it.longitude) }
+        if (startPt != null && GeoMath.distanceMeters(startPt.latitude, startPt.longitude, matched.first().ll.latitude, matched.first().ll.longitude) > 15.0) {
+            rawSamples.add(ParsedPathSample(t0, startPt))
+        }
+        for (sample in matched) {
+            val prev = rawSamples.lastOrNull()?.ll
+            if (prev == null || GeoMath.distanceMeters(prev.latitude, prev.longitude, sample.ll.latitude, sample.ll.longitude) >= 2.0) {
+                rawSamples.add(sample)
+            }
+        }
+        if (endPt != null && rawSamples.isNotEmpty() && GeoMath.distanceMeters(rawSamples.last().ll.latitude, rawSamples.last().ll.longitude, endPt.latitude, endPt.longitude) > 15.0) {
+            rawSamples.add(ParsedPathSample(t1, endPt))
+        }
+
+        if (rawSamples.size < 2 || (rawSamples.size <= 2 && rec.encodedPolyline.isNotBlank())) return rec
+
+        val avgSpeedMps = if (rec.durationMillis > 0L) (rec.distanceMeters / (rec.durationMillis / 1000.0)).toFloat().coerceIn(0.5f, 18f) else 2.8f
+        val pts = ArrayList<TrackPoint>(rawSamples.size)
+        var cumDist = 0.0
+        for (idx in rawSamples.indices) {
+            val cur = rawSamples[idx]
+            val prev = if (idx > 0) rawSamples[idx - 1] else null
+            val stepM = if (prev != null) {
+                GeoMath.distanceMeters(prev.ll.latitude, prev.ll.longitude, cur.ll.latitude, cur.ll.longitude)
+            } else 0.0
+            cumDist += stepM
+            val curMs = (cur.ms ?: t0).coerceAtLeast(t0)
+            val prevMs = (prev?.ms ?: t0).coerceAtLeast(t0)
+            val dtSec = ((curMs - prevMs) / 1000.0)
+            val segSpd = if (prev != null && dtSec >= 0.5) {
+                (stepM / dtSec).toFloat().coerceIn(0f, 18f)
+            } else avgSpeedMps
+            pts.add(
+                TrackPoint(
+                    seqIndex = idx,
+                    timestampMillis = curMs,
+                    elapsedMillis = (curMs - t0).coerceAtLeast(0L),
+                    latitude = cur.ll.latitude,
+                    longitude = cur.ll.longitude,
+                    cumulativeDistanceMeters = cumDist,
+                    speedMps = segSpd
+                )
+            )
+        }
+        val poly = EncodedPolylineCodec.encode(rawSamples.map { it.ll })
         return rec.copy(encodedPolyline = poly, rawEncodedPolyline = poly, trackPoints = pts)
+    }
+
+    private fun sliceTimeRange(sorted: List<ParsedPathSample>, loMs: Long, hiMs: Long): List<ParsedPathSample> {
+        var lo = 0
+        var hi = sorted.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if ((sorted[mid].ms ?: 0L) < loMs) lo = mid + 1 else hi = mid
+        }
+        val out = mutableListOf<ParsedPathSample>()
+        var i = lo
+        while (i < sorted.size) {
+            val s = sorted[i]
+            val t = s.ms ?: break
+            if (t > hiMs) break
+            out.add(s)
+            i++
+        }
+        return out
     }
 
     private fun toRecord(seg: ParsedSeg, kind: ActivityKind, t0: Long, t1: Long, d: Double): RunRecord {
@@ -257,6 +340,13 @@ class TimelineJsonImporter(
                 )
             )
         }
+        val rawPts = root.rawSignals.mapNotNull { sig ->
+            val pos = sig.position ?: return@mapNotNull null
+            val ll = parseLatLon(pos.latLngUpper ?: pos.latLng ?: pos.point) ?: return@mapNotNull null
+            val ms = parseMs(pos.timestamp) ?: return@mapNotNull null
+            ParsedPathSample(ms, ll)
+        }
+        col.collectPath(rawPts)
         return col.build(nowMs)
     }
 
@@ -274,13 +364,51 @@ class TimelineJsonImporter(
     private fun readRoot(jr: JsonReader, col: MultiActivityCollector) {
         jr.beginObject()
         while (jr.hasNext()) {
-            if (jr.nextName() == "semanticSegments" && jr.peek() == JsonToken.BEGIN_ARRAY) {
-                readSegments(jr, col)
-            } else {
-                jr.skipValue()
+            when (jr.nextName()) {
+                "semanticSegments" -> if (jr.peek() == JsonToken.BEGIN_ARRAY) readSegments(jr, col) else jr.skipValue()
+                "rawSignals" -> if (jr.peek() == JsonToken.BEGIN_ARRAY) readRawSignals(jr, col) else jr.skipValue()
+                else -> jr.skipValue()
             }
         }
         jr.endObject()
+    }
+
+    private fun readRawSignals(jr: JsonReader, col: MultiActivityCollector) {
+        val batch = mutableListOf<ParsedPathSample>()
+        jr.beginArray()
+        while (jr.hasNext()) {
+            if (jr.peek() != JsonToken.BEGIN_OBJECT) { jr.skipValue(); continue }
+            var sample: ParsedPathSample? = null
+            jr.beginObject()
+            while (jr.hasNext()) {
+                if (jr.nextName() == "position" && jr.peek() == JsonToken.BEGIN_OBJECT) {
+                    sample = readRawPosition(jr)
+                } else {
+                    jr.skipValue()
+                }
+            }
+            jr.endObject()
+            if (sample != null) batch.add(sample)
+        }
+        jr.endArray()
+        col.collectPath(batch)
+    }
+
+    private fun readRawPosition(jr: JsonReader): ParsedPathSample? {
+        var llStr: String? = null
+        var tsStr: String? = null
+        jr.beginObject()
+        while (jr.hasNext()) {
+            when (jr.nextName()) {
+                "LatLng", "latLng", "point" -> llStr = nextStr(jr)
+                "timestamp", "time" -> tsStr = nextStr(jr)
+                else -> jr.skipValue()
+            }
+        }
+        jr.endObject()
+        val ll = parseLatLon(llStr) ?: return null
+        val ms = parseMs(tsStr) ?: return null
+        return ParsedPathSample(ms, ll)
     }
 
     private fun readSegments(jr: JsonReader, col: MultiActivityCollector) {

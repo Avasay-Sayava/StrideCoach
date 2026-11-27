@@ -30,6 +30,7 @@ import com.stridecoach.running.core.domain.model.RunSource
 import com.stridecoach.running.core.domain.model.RunSplit
 import com.stridecoach.running.core.domain.model.formatDuration
 import com.stridecoach.running.core.domain.model.formatPace
+import com.stridecoach.running.core.domain.model.formatSpeedKmh
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -59,6 +60,9 @@ class RunTrackingService : Service(), LocationListener {
     private var paused = false
     private var sessionKind = ActivityKind.RUNNING
     private val splits = mutableListOf<RunSplit>()
+    private var notifGuardArmedAtMs = 0L
+    private var notifUnlockedUntilMs = 0L
+    private var notifStopArmedAtMs = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -68,6 +72,7 @@ class RunTrackingService : Service(), LocationListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, id: Int): Int {
+        val now = System.currentTimeMillis()
         when (intent?.action) {
             ACTION_START -> begin(TrackingSessionBus.pendingActivityKind)
             ACTION_START_AUTO -> {
@@ -75,11 +80,48 @@ class RunTrackingService : Service(), LocationListener {
                 val kind = runCatching { ActivityKind.valueOf(rawKind ?: "") }.getOrDefault(ActivityKind.RUNNING)
                 begin(kind)
             }
-            ACTION_PAUSE_RESUME -> togglePause()
-            ACTION_NEXT_STEP -> nextStep()
+            ACTION_NOTIF_UNLOCK_TAP -> {
+                if (now - notifGuardArmedAtMs <= 3_000L) {
+                    notifUnlockedUntilMs = now + 7_000L
+                    notifGuardArmedAtMs = 0L
+                    notifStopArmedAtMs = 0L
+                } else {
+                    notifGuardArmedAtMs = now
+                }
+                pushNotif(currentNotifTitle(), summary())
+            }
+            ACTION_PAUSE_RESUME -> {
+                if (now < notifUnlockedUntilMs) notifUnlockedUntilMs = now + 7_000L
+                togglePause()
+            }
+            ACTION_NEXT_STEP -> {
+                if (now < notifUnlockedUntilMs) notifUnlockedUntilMs = now + 7_000L
+                nextStep()
+            }
+            ACTION_NOTIF_STOP_CONFIRM -> {
+                val guardOff = !TrackingSessionBus.widgetTapGuardEnabled || now < notifUnlockedUntilMs
+                if (guardOff) {
+                    if (now - notifStopArmedAtMs <= 3_500L) {
+                        notifStopArmedAtMs = 0L
+                        notifUnlockedUntilMs = 0L
+                        finish()
+                    } else {
+                        notifStopArmedAtMs = now
+                        notifUnlockedUntilMs = now + 7_000L
+                        pushNotif(currentNotifTitle(), summary())
+                    }
+                }
+            }
             ACTION_STOP -> finish()
         }
         return START_STICKY
+    }
+
+    private fun currentNotifTitle(): String = when {
+        paused -> "Paused"
+        else -> sm?.currentStep()?.displayName()
+            ?: TrackingSessionBus.state.value.workout?.title
+            ?: defaultTitle(sessionKind)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -91,6 +133,9 @@ class RunTrackingService : Service(), LocationListener {
         sessionKind = kind
         startMs = System.currentTimeMillis()
         paused = false
+        notifGuardArmedAtMs = 0L
+        notifUnlockedUntilMs = 0L
+        notifStopArmedAtMs = 0L
         splits.clear()
         gps = GpsSignalProcessor()
         sm = WorkoutStateMachine(w)
@@ -286,9 +331,12 @@ class RunTrackingService : Service(), LocationListener {
 
     private fun summary(): String {
         val km = gps.totalDistanceMeters() / 1000.0
-        val p = formatPace(gps.rollingPaceSecPerKm())
+        val paceSec = gps.rollingPaceSecPerKm()
+        val p = formatPace(paceSec)
         val d = formatDuration(gps.activeElapsedMillis())
-        return "%.2f km • %s • %s/km".format(km, d, p)
+        val spd = TrackingSessionBus.state.value.currentSpeedKmh
+        val spdText = if (spd > 0.2f) "%.1f km/h".format(spd) else formatSpeedKmh(paceSec)
+        return "%.2f km • %s • %s/km • %s".format(km, d, p, spdText)
     }
 
     private fun notif(title: String, text: String): Notification {
@@ -297,7 +345,7 @@ class RunTrackingService : Service(), LocationListener {
         val openPi = launch?.let {
             PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         }
-        return NotificationCompat.Builder(this, CHANNEL)
+        val builder = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentTitle(title)
             .setContentText(text)
@@ -305,10 +353,19 @@ class RunTrackingService : Service(), LocationListener {
             .setOnlyAlertOnce(true)
             .setContentIntent(openPi)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .addAction(0, lbl, actionPi(ACTION_PAUSE_RESUME, 1))
-            .addAction(0, "Next", actionPi(ACTION_NEXT_STEP, 2))
-            .addAction(0, "Stop", actionPi(ACTION_STOP, 3))
-            .build()
+
+        val now = System.currentTimeMillis()
+        val guardActive = TrackingSessionBus.widgetTapGuardEnabled && now >= notifUnlockedUntilMs
+        if (guardActive) {
+            val armed = now - notifGuardArmedAtMs <= 3_000L
+            builder.addAction(0, if (armed) "Tap Again to Unlock" else "Locked • Tap 2x", actionPi(ACTION_NOTIF_UNLOCK_TAP, 4))
+        } else {
+            val stopArmed = now - notifStopArmedAtMs <= 3_500L
+            builder.addAction(0, lbl, actionPi(ACTION_PAUSE_RESUME, 1))
+            builder.addAction(0, "Next", actionPi(ACTION_NEXT_STEP, 2))
+            builder.addAction(0, if (stopArmed) "Confirm Stop?" else "Stop", actionPi(ACTION_NOTIF_STOP_CONFIRM, 3))
+        }
+        return builder.build()
     }
 
     private fun pushNotif(title: String, text: String) {
@@ -400,6 +457,8 @@ class RunTrackingService : Service(), LocationListener {
         const val ACTION_PAUSE_RESUME = "com.stridecoach.running.action.PAUSE_RESUME"
         const val ACTION_NEXT_STEP = "com.stridecoach.running.action.NEXT_STEP"
         const val ACTION_STOP = "com.stridecoach.running.action.STOP"
+        const val ACTION_NOTIF_UNLOCK_TAP = "com.stridecoach.running.action.NOTIF_UNLOCK_TAP"
+        const val ACTION_NOTIF_STOP_CONFIRM = "com.stridecoach.running.action.NOTIF_STOP_CONFIRM"
         const val EXTRA_ACTIVITY_KIND = "activity_kind"
 
         fun start(ctx: Context) {

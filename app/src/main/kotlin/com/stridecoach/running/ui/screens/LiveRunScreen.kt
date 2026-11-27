@@ -109,6 +109,7 @@ fun LiveRunScreen(
     var selectedKind by remember { mutableStateOf(ActivityKind.RUNNING) }
     var recenterTick by remember { mutableIntStateOf(0) }
     var containerHeightPx by remember { mutableIntStateOf(0) }
+    var topOverlayPx by remember { mutableIntStateOf(0) }
 
     val hasPath = liveState.trackPoints.size >= 2 || guidePts.size >= 2
     val scaffold = rememberBottomSheetScaffoldState()
@@ -154,14 +155,16 @@ fun LiveRunScreen(
                 is3dMode = is3d,
                 show3dBuildings = prefs.show3dBuildings,
                 showTerrainHillshade = prefs.showTerrainHillshade,
-                show3dRibbon = prefs.show3dRouteRibbon,
+                physical3dTerrainMesh = prefs.physical3dTerrainMesh,
+                terrainExaggeration = prefs.terrainExaggerationTenths / 10f,
                 keepCenteredOnSheetDrag = prefs.keepMapCenteredOnSheetDrag,
                 preloadTiles = prefs.preloadNearbyTiles,
                 mapStyleMode = prefs.mapStyleMode,
                 liveHeadingDeg = liveState.headingDeg,
                 fallbackCenter = fallbackCenter,
+                topOcclusionPx = topOverlayPx,
                 bottomOcclusionPx = bottomOcclusionPx,
-                topHudDp = if (prefs.showTopMapHud) 156 else 118,
+                topHudDp = if (prefs.showTopMapHud) 202 else 124,
                 bottomPadDp = 272,
                 recenterToken = recenterTick,
                 onUserManualPan = { camMode = MapCameraMode.FREE_PAN },
@@ -175,6 +178,7 @@ fun LiveRunScreen(
                 hasPath = hasPath,
                 camMode = camMode,
                 is3d = is3d,
+                onMeasuredHeight = { topOverlayPx = it },
                 onToggleLock = { locked = !locked },
                 onOpenPlanner = onOpenPlanner,
                 onPickMode = { mode ->
@@ -196,6 +200,7 @@ private fun LiveTopFloatingHud(
     hasPath: Boolean,
     camMode: MapCameraMode,
     is3d: Boolean,
+    onMeasuredHeight: (Int) -> Unit,
     onToggleLock: () -> Unit,
     onOpenPlanner: () -> Unit,
     onPickMode: (MapCameraMode) -> Unit,
@@ -210,7 +215,10 @@ private fun LiveTopFloatingHud(
     }
     val sn = st.snapshot
     Column(
-        modifier = Modifier.fillMaxWidth().padding(top = topPad, start = 12.dp, end = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coords -> onMeasuredHeight(coords.size.height) }
+            .padding(top = topPad, start = 12.dp, end = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(
@@ -253,12 +261,13 @@ private fun LiveTopFloatingHud(
 
         if (prefs.showTopMapHud) {
             val spdKmh = if (st.isActive) st.currentSpeedKmh else passiveSpeedKmh
-            val paceSec = if (st.isActive) {
-                sn?.currentPaceSecPerKm ?: 0
-            } else if (passiveSpeedKmh >= 1.5f) {
-                (3600f / passiveSpeedKmh).roundToInt()
-            } else 0
-            val paceStr = if (paceSec > 0) "${formatPace(paceSec)}/km" else "--:--/km"
+            val livePaceSec = when {
+                st.isActive && st.currentSpeedKmh >= 1.4f -> (3600f / st.currentSpeedKmh).roundToInt()
+                st.isActive -> sn?.currentPaceSecPerKm ?: 0
+                passiveSpeedKmh >= 1.5f -> (3600f / passiveSpeedKmh).roundToInt()
+                else -> 0
+            }
+            val paceStr = if (livePaceSec > 0) "${formatPace(livePaceSec)}/km" else "--:--/km"
             TopTelemetryMapHud(
                 speedText = if (prefs.showSpeedKmh) "%.1f km/h".format(spdKmh) else null,
                 timeText = formatDuration(sn?.totalElapsedMillis ?: 0L),
@@ -365,23 +374,47 @@ private fun ActiveHudSheetBody(
     onStopRun: () -> Unit
 ) {
     val sn = st.snapshot
-    val distKm = (sn?.totalDistanceMeters ?: 0.0) / 1000.0
+    val distM = sn?.totalDistanceMeters ?: 0.0
+    val elapsedMs = sn?.totalElapsedMillis ?: 0L
+    val distKm = distM / 1000.0
     val distText = "%.2f km".format(distKm)
-    val paceText = "${formatPace(sn?.currentPaceSecPerKm ?: 0)}/km"
-    val timeText = formatDuration(sn?.totalElapsedMillis ?: 0L)
+    val overallAvgPaceSec = if (distM >= 25.0 && elapsedMs > 0L) {
+        ((elapsedMs / 1000.0) / distKm).roundToInt()
+    } else {
+        sn?.currentPaceSecPerKm ?: 0
+    }
+    val overallAvgSpeedKmh = if (elapsedMs > 2_000L && distM >= 5.0) {
+        ((distM / (elapsedMs / 1000.0)) * 3.6).toFloat()
+    } else {
+        0f
+    }
+    val paceText = if (overallAvgPaceSec > 0) "${formatPace(overallAvgPaceSec)}/km" else "--:--/km"
+    val timeText = formatDuration(elapsedMs)
     val cadText = if (st.cadenceSpm > 0) "${st.cadenceSpm} spm" else "—"
     val calFactor = if (st.activityKind == ActivityKind.CYCLING) 32.0 else 62.0
     val liveKcal = (distKm * calFactor).roundToInt()
-    val elevGradeText = if (kotlin.math.abs(st.currentGradePct) >= 0.8f) {
-        "+${st.elevM}m (${"%+.0f".format(st.currentGradePct)}%)"
-    } else "+${st.elevM}m"
+    val elevGainText = "+${st.elevM}m"
 
     Column(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        TelemetryStatStrip(items = listOf(timeText to "Time", distText to "Dist", paceText to "Pace", "%.1f km/h".format(st.currentSpeedKmh) to "Speed"))
-        TelemetryStatStrip(items = listOf(cadText to "Cadence", "$liveKcal kcal" to "Calories", elevGradeText to "Elev / Slope", "${st.steps}" to "Steps"))
+        TelemetryStatStrip(
+            items = listOf(
+                timeText to "Total Time",
+                distText to "Total Dist",
+                paceText to "Avg Pace",
+                "%.1f km/h".format(overallAvgSpeedKmh) to "Avg Speed"
+            )
+        )
+        TelemetryStatStrip(
+            items = listOf(
+                cadText to "Cadence",
+                "$liveKcal kcal" to "Calories",
+                elevGainText to "Elev Gain",
+                "${st.steps}" to "Steps"
+            )
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -412,8 +445,8 @@ private fun ActiveHudSheetBody(
         Text(stateMsg, style = MaterialTheme.typography.bodySmall, color = if (locked) PaceTooFast else KdeMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column {
-                Text("Speed", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
-                Text("%.1f km/h".format(st.currentSpeedKmh), style = MaterialTheme.typography.headlineSmall.merge(TabularNumberStyle), fontWeight = FontWeight.Bold, color = KdePurple)
+                Text("Workout Avg Pace", style = MaterialTheme.typography.labelSmall, color = KdeMuted)
+                Text(paceText, style = MaterialTheme.typography.headlineSmall.merge(TabularNumberStyle), fontWeight = FontWeight.Bold, color = KdePurple)
             }
             sn?.projectedFinishMillis?.let { pf ->
                 Column(horizontalAlignment = Alignment.End) {

@@ -16,3 +16,8 @@
 -dontwarn org.maplibre.**
 -dontwarn com.mapbox.**
 -dontwarn androidx.health.connect.**
+-keepattributes JavascriptInterface
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keep class com.stridecoach.running.ui.components.TerrainJsBridge { *; }

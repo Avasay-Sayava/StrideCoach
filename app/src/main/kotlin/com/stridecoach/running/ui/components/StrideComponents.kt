@@ -7,9 +7,11 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Build
 import android.os.Looper
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,14 +25,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -42,6 +48,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -84,19 +91,37 @@ fun StrideCard(
     modifier: Modifier = Modifier,
     borderColor: Color = KdeBorder,
     bgColor: Color = KdeCardBg,
+    onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = bgColor),
-        border = BorderStroke(1.dp, borderColor)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            content = content
-        )
+    val shape = RoundedCornerShape(12.dp)
+    if (onClick != null) {
+        Card(
+            onClick = onClick,
+            modifier = modifier.fillMaxWidth(),
+            shape = shape,
+            colors = CardDefaults.cardColors(containerColor = bgColor),
+            border = BorderStroke(1.dp, borderColor)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                content = content
+            )
+        }
+    } else {
+        Card(
+            modifier = modifier.fillMaxWidth(),
+            shape = shape,
+            colors = CardDefaults.cardColors(containerColor = bgColor),
+            border = BorderStroke(1.dp, borderColor)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                content = content
+            )
+        }
     }
 }
 
@@ -193,11 +218,16 @@ fun TopTelemetryMapHud(
 }
 
 @Composable
-fun StatusPill(label: String, color: Color) {
+fun StatusPill(label: String, color: Color, onClick: (() -> Unit)? = null) {
     Surface(
         shape = RoundedCornerShape(999.dp),
         color = color.copy(alpha = 0.16f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.45f))
+        border = BorderStroke(1.dp, color.copy(alpha = 0.45f)),
+        modifier = if (onClick != null) {
+            Modifier.clip(RoundedCornerShape(999.dp)).clickable(onClick = onClick)
+        } else {
+            Modifier
+        }
     ) {
         Text(
             text = label,
@@ -245,7 +275,7 @@ fun HoldToFinishButton(
         shape = RoundedCornerShape(999.dp),
         color = if (enabled) PaceTooSlow.copy(alpha = 0.16f) else KdeCardBg,
         border = BorderStroke(1.dp, if (enabled) PaceTooSlow.copy(alpha = 0.6f) else KdeBorder),
-        modifier = modifier.pointerInput(enabled) {
+        modifier = modifier.clip(RoundedCornerShape(999.dp)).pointerInput(enabled) {
             if (!enabled) return@pointerInput
             detectTapGestures(
                 onPress = {
@@ -315,26 +345,65 @@ fun rememberPassiveLocationReading(enabled: Boolean): PassiveLocReading? {
         val mgr = ctx.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
         if (mgr == null) return@DisposableEffect onDispose {}
 
-        val lastGps = runCatching { mgr.getLastKnownLocation(LocationManager.GPS_PROVIDER) }.getOrNull()
-        val lastNet = runCatching { mgr.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) }.getOrNull()
-        val init = listOfNotNull(lastGps, lastNet).maxByOrNull { it.time }
+        val candidates = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add("fused")
+            add(LocationManager.GPS_PROVIDER)
+            add(LocationManager.NETWORK_PROVIDER)
+            add(LocationManager.PASSIVE_PROVIDER)
+        }
+        val init = candidates
+            .mapNotNull { prov -> runCatching { mgr.getLastKnownLocation(prov) }.getOrNull() }
+            .maxByOrNull { it.time }
         if (init != null) {
             val spd = if (init.hasSpeed()) (init.speed * 3.6f).coerceAtLeast(0f) else 0f
             loc = PassiveLocReading(LatLon(init.latitude, init.longitude), spd, init.accuracy)
         }
 
-        val listener = LocationListener { next: Location ->
+        var bestTime = init?.time ?: 0L
+        fun acceptLocation(next: Location) {
+            if (next.time > 0L && next.time + 2_000L < bestTime) return
+            bestTime = maxOf(bestTime, next.time)
             val spd = if (next.hasSpeed()) (next.speed * 3.6f).coerceAtLeast(0f) else 0f
             loc = PassiveLocReading(LatLon(next.latitude, next.longitude), spd, next.accuracy)
         }
-        runCatching {
-            if (mgr.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                mgr.requestLocationUpdates(LocationManager.GPS_PROVIDER, 4_000L, 5f, listener, Looper.getMainLooper())
-            } else if (mgr.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                mgr.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 6_000L, 10f, listener, Looper.getMainLooper())
+        fun makeListener(): LocationListener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                acceptLocation(location)
+            }
+
+            override fun onLocationChanged(locations: MutableList<Location>) {
+                for (item in locations) acceptLocation(item)
             }
         }
-        onDispose { runCatching { mgr.removeUpdates(listener) } }
+        val activeListeners = mutableListOf<LocationListener>()
+        val enabledProvs = runCatching { mgr.getProviders(true) }.getOrDefault(emptyList())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && "fused" in enabledProvs) {
+            makeListener().also { l ->
+                runCatching {
+                    mgr.requestLocationUpdates("fused", 1_000L, 0f, l, Looper.getMainLooper())
+                    activeListeners.add(l)
+                }
+            }
+        }
+        if (LocationManager.GPS_PROVIDER in enabledProvs) {
+            makeListener().also { l ->
+                runCatching {
+                    mgr.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, l, Looper.getMainLooper())
+                    activeListeners.add(l)
+                }
+            }
+        }
+        if (LocationManager.NETWORK_PROVIDER in enabledProvs) {
+            makeListener().also { l ->
+                runCatching {
+                    mgr.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 2_000L, 0f, l, Looper.getMainLooper())
+                    activeListeners.add(l)
+                }
+            }
+        }
+        onDispose {
+            activeListeners.forEach { l -> runCatching { mgr.removeUpdates(l) } }
+        }
     }
     return loc
 }
@@ -342,3 +411,44 @@ fun rememberPassiveLocationReading(enabled: Boolean): PassiveLocReading? {
 private fun hasLocPermission(ctx: Context): Boolean =
     ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+@Composable
+fun RenameExerciseDialog(
+    currentName: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var draft by remember(currentName) { mutableStateOf(currentName) }
+    val trimmed = draft.trim()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = KdeCardBg,
+        titleContentColor = KdeText,
+        textContentColor = KdeText,
+        shape = RoundedCornerShape(16.dp),
+        title = { Text("Rename Exercise", fontWeight = FontWeight.Bold) },
+        text = {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                label = { Text("Exercise name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (trimmed.isNotEmpty()) onConfirm(trimmed) },
+                enabled = trimmed.isNotEmpty(),
+                shape = RoundedCornerShape(999.dp)
+            ) {
+                Text("Save", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, shape = RoundedCornerShape(999.dp)) {
+                Text("Cancel", color = KdeMuted)
+            }
+        }
+    )
+}

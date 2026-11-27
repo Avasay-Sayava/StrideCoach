@@ -34,7 +34,8 @@ data class CoachPreferences(
     val showMapAttribution: Boolean = true,
     val show3dBuildings: Boolean = true,
     val showTerrainHillshade: Boolean = true,
-    val show3dRouteRibbon: Boolean = true,
+    val physical3dTerrainMesh: Boolean = true,
+    val terrainExaggerationTenths: Int = 22,
     val keepMapCenteredOnSheetDrag: Boolean = true,
     val animateSectionHighlight: Boolean = true,
     val smoothTrackGradient: Boolean = true,
@@ -76,7 +77,8 @@ class AppPreferencesStore(private val ctx: Context) {
     private val kAttr = booleanPreferencesKey("attr")
     private val kBld = booleanPreferencesKey("bld3d")
     private val kHil = booleanPreferencesKey("hills")
-    private val kRib = booleanPreferencesKey("rib3d")
+    private val kMesh = booleanPreferencesKey("mesh3d")
+    private val kTexag = intPreferencesKey("terexag")
     private val kShc = booleanPreferencesKey("shctr")
     private val kHia = booleanPreferencesKey("hianim")
     private val kSmg = booleanPreferencesKey("smgrad")
@@ -123,7 +125,8 @@ class AppPreferencesStore(private val ctx: Context) {
             map[kAttr] = nxt.showMapAttribution
             map[kBld] = nxt.show3dBuildings
             map[kHil] = nxt.showTerrainHillshade
-            map[kRib] = nxt.show3dRouteRibbon
+            map[kMesh] = nxt.physical3dTerrainMesh
+            map[kTexag] = nxt.terrainExaggerationTenths.coerceIn(10, 40)
             map[kShc] = nxt.keepMapCenteredOnSheetDrag
             map[kHia] = nxt.animateSectionHighlight
             map[kSmg] = nxt.smoothTrackGradient
@@ -166,7 +169,8 @@ class AppPreferencesStore(private val ctx: Context) {
             showMapAttribution = p[kAttr] ?: true,
             show3dBuildings = p[kBld] ?: true,
             showTerrainHillshade = p[kHil] ?: true,
-            show3dRouteRibbon = p[kRib] ?: true,
+            physical3dTerrainMesh = p[kMesh] ?: true,
+            terrainExaggerationTenths = (p[kTexag] ?: 22).coerceIn(10, 40),
             keepMapCenteredOnSheetDrag = p[kShc] ?: true,
             animateSectionHighlight = p[kHia] ?: true,
             smoothTrackGradient = p[kSmg] ?: true,

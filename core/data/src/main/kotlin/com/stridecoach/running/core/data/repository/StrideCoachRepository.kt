@@ -14,6 +14,7 @@ import com.stridecoach.running.core.domain.model.DayRole
 import com.stridecoach.running.core.domain.model.PlanDayStatus
 import com.stridecoach.running.core.domain.model.PlannedDay
 import com.stridecoach.running.core.domain.model.RunRecord
+import com.stridecoach.running.core.domain.model.RunSource
 import com.stridecoach.running.core.domain.model.StructuredWorkout
 import com.stridecoach.running.core.domain.model.TrainingPlanConfig
 import com.stridecoach.running.core.domain.model.WalkLog
@@ -78,16 +79,40 @@ class StrideCoachRepository(
 
     suspend fun saveRunsDeduplicated(incoming: List<RunRecord>): Int {
         if (incoming.isEmpty()) return 0
-        val existing = db.runDao().getAllRunsIncludingTrashed().map { it.run.startTimestampMillis }
+        val existing = db.runDao().getAllRunsIncludingTrashed()
         val windowMs = 5 * 60_000L
-        val fresh = incoming.filter { rec ->
-            existing.none { ts -> abs(ts - rec.startTimestampMillis) <= windowMs }
+        val fresh = mutableListOf<RunRecord>()
+        var upgraded = 0
+        for (rec in incoming) {
+            val match = existing.firstOrNull { row ->
+                abs(row.run.startTimestampMillis - rec.startTimestampMillis) <= windowMs
+            }
+            if (match == null) {
+                fresh.add(rec)
+            } else if (match.run.source == RunSource.TIMELINE_IMPORT.name && rec.trackPoints.size > 2) {
+                val curPts = db.runDao().getTrackPoints(match.run.id)
+                if (curPts.size <= 2) {
+                    val domain = match.run.toDomain(match.splits.map { it.toDomain() }, curPts.map { it.toDomain() })
+                    saveRun(
+                        domain.copy(
+                            encodedPolyline = rec.encodedPolyline,
+                            rawEncodedPolyline = rec.rawEncodedPolyline,
+                            trackPoints = rec.trackPoints
+                        )
+                    )
+                    upgraded++
+                }
+            }
         }
         if (fresh.isNotEmpty()) saveRuns(fresh)
-        return fresh.size
+        return fresh.size + upgraded
     }
 
     suspend fun moveRunToTrash(id: String) = db.runDao().setRunDeleted(id, System.currentTimeMillis())
+    suspend fun renameRun(id: String, newName: String) {
+        val clean = newName.trim()
+        if (clean.isNotEmpty()) db.runDao().updateRunName(id, clean)
+    }
     suspend fun restoreRun(id: String) = db.runDao().setRunDeleted(id, null)
     suspend fun deleteRunForever(id: String) = db.runDao().deleteRun(id)
 
