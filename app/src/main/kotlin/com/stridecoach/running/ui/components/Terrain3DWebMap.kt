@@ -64,6 +64,8 @@ private class TerrainMapHolder {
     var queuedFrame: String? = null
     var lastStatic = ""
     var lastFrame = ""
+    var lastControlSig = ""
+    var lastPlayPushMs = 0L
     var sentBaseKey = ""
     var sentGuideKey = ""
 }
@@ -175,7 +177,8 @@ internal fun Terrain3DWebMap(
                 cameraMode, liveHeadingDeg, topCss, botCss, fitTopCss, fitBotCss, fitSideCss,
                 recenterToken, playing, playbackRatePerSec, northLockedInFollow, resetNorthToken
             )
-            enqueueScene(h, view, staticJson, frameJson)
+            val controlSig = "${cameraMode}_${colorByPace}_${showHead}_${showUserDot}_${northLockedInFollow}_${resetNorthToken}_${recenterToken}_${topCss}_${botCss}_${playing}_${playbackRatePerSec}"
+            enqueueScene(h, view, staticJson, frameJson, controlSig, playing)
         },
         modifier = modifier
     )
@@ -251,14 +254,28 @@ private fun onBridgeReady(h: TerrainMapHolder, wv: WebView) {
     dispatchPending(h, wv)
 }
 
-private fun enqueueScene(h: TerrainMapHolder, wv: WebView, sJson: String, fJson: String) {
-    if (sJson != h.lastStatic) {
+private fun enqueueScene(
+    h: TerrainMapHolder,
+    wv: WebView,
+    sJson: String,
+    fJson: String,
+    controlSig: String,
+    playing: Boolean
+) {
+    val staticChanged = sJson != h.lastStatic
+    if (staticChanged) {
         h.lastStatic = sJson
         h.queuedStatic = sJson
     }
     if (fJson != h.lastFrame) {
-        h.lastFrame = fJson
-        h.queuedFrame = fJson
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        val canDefer = playing && !staticChanged && controlSig == h.lastControlSig && nowMs - h.lastPlayPushMs < 180L
+        if (!canDefer) {
+            h.lastFrame = fJson
+            h.queuedFrame = fJson
+            h.lastControlSig = controlSig
+            h.lastPlayPushMs = nowMs
+        }
     }
     if (h.ready && !h.inFlight) dispatchPending(h, wv)
 }
