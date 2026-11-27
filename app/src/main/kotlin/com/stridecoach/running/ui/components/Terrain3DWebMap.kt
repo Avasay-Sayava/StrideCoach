@@ -563,7 +563,7 @@ private fun buildTerrainHtml(bgHex: String): String = """
         tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
         encoding: 'terrarium',
         tileSize: 256,
-        maxzoom: 14
+        maxzoom: 13
       });
     }
     try {
@@ -591,7 +591,7 @@ private fun buildTerrainHtml(bgHex: String): String = """
         type: 'fill-extrusion',
         source: 'openmaptiles',
         'source-layer': 'building',
-        minzoom: 12.5,
+        minzoom: 13.8,
         paint: {
           'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], 12],
           'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0],
