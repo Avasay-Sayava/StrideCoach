@@ -361,7 +361,12 @@ fun VectorRouteMap(
 
 private fun installVectorLayers(st: Style) {
     st.transition = TransitionOptions(0L, 0L, false)
+    installTerrainAndBuildings(st)
+    installRouteLineLayers(st)
+    installMarkerLayers(st)
+}
 
+private fun installTerrainAndBuildings(st: Style) {
     val demTs = TileSet("2.2.0", TERRARIUM_DEM_TILES).apply {
         encoding = "terrarium"
         minZoom = 0f
@@ -378,27 +383,24 @@ private fun installVectorLayers(st: Style) {
         else -> st.addLayer(hs)
     }
 
-    if (st.getSource("openmaptiles") != null) {
-        val bld = FillExtrusionLayer("3d-buildings-layer", "openmaptiles").apply {
-            sourceLayer = "building"
-            minZoom = 13.8f
-            setProperties(
-                fillExtrusionHeight(Expression.coalesce(Expression.get("render_height"), Expression.literal(8))),
-                fillExtrusionBase(Expression.coalesce(Expression.get("render_min_height"), Expression.literal(0))),
-                fillExtrusionColor(Color.parseColor("#2A303B")),
-                fillExtrusionOpacity(0.82f),
-                visibility(Property.NONE)
-            )
-        }
-        if (st.getLayer("water_name") != null) {
-            st.addLayerBelow(bld, "water_name")
-        } else {
-            st.addLayer(bld)
-        }
+    if (st.getSource("openmaptiles") == null) return
+    val bld = FillExtrusionLayer("3d-buildings-layer", "openmaptiles").apply {
+        sourceLayer = "building"
+        minZoom = 13.8f
+        setProperties(
+            fillExtrusionHeight(Expression.coalesce(Expression.get("render_height"), Expression.literal(8))),
+            fillExtrusionBase(Expression.coalesce(Expression.get("render_min_height"), Expression.literal(0))),
+            fillExtrusionColor(Color.parseColor("#2A303B")),
+            fillExtrusionOpacity(0.82f),
+            visibility(Property.NONE)
+        )
     }
+    if (st.getLayer("water_name") != null) st.addLayerBelow(bld, "water_name") else st.addLayer(bld)
+}
 
+private fun installRouteLineLayers(st: Style) {
     val srcs = listOf("guide-src", "base-src", "pace-src", "active-src", "trim-src", "hi-src", "planner-pts-src", "user-loc-src", "head-src")
-    srcs.forEach { id -> st.addSource(GeoJsonSource(id)) }
+    srcs.forEach { st.addSource(GeoJsonSource(it)) }
 
     st.addLayer(
         LineLayer("guide-layer", "guide-src").withProperties(
@@ -430,69 +432,35 @@ private fun installVectorLayers(st: Style) {
     )
     st.addLayer(baseLineLayer("active-layer", "active-src", "#926EE4", 5.5f))
     st.addLayer(baseLineLayer("trim-layer", "trim-src", "#F87171", 5.4f))
+}
 
+private fun installMarkerLayers(st: Style) {
     st.addLayer(
         CircleLayer("planner-pts-layer", "planner-pts-src").withProperties(
-            circleRadius(
-                Expression.match(
-                    Expression.get("kind"),
-                    Expression.literal(6.0f),
-                    Expression.stop("start", 8.5f),
-                    Expression.stop("end", 8.5f)
-                )
-            ),
-            circleColor(
-                Expression.match(
-                    Expression.get("kind"),
-                    Expression.literal("#926EE4"),
-                    Expression.stop("start", "#4ADE80"),
-                    Expression.stop("end", "#F87171")
-                )
-            ),
+            circleRadius(Expression.match(Expression.get("kind"), Expression.literal(6.0f), Expression.stop("start", 8.5f), Expression.stop("end", 8.5f))),
+            circleColor(Expression.match(Expression.get("kind"), Expression.literal("#926EE4"), Expression.stop("start", "#4ADE80"), Expression.stop("end", "#F87171"))),
             circleStrokeColor(Color.WHITE),
             circleStrokeWidth(2.2f)
         )
     )
+    addCircleDotTriplet(st, "user-loc", 14f, "#3DAEE9", 0.28f, 7.8f, 5.2f)
+    addCircleDotTriplet(st, "head", 13f, "#926EE4", 0.32f, 7.5f, 4.8f)
+}
 
-    st.addLayer(
-        CircleLayer("user-loc-halo", "user-loc-src").withProperties(
-            circleRadius(14f),
-            circleColor(Color.parseColor("#3DAEE9")),
-            circleOpacity(0.28f)
-        )
-    )
-    st.addLayer(
-        CircleLayer("user-loc-ring", "user-loc-src").withProperties(
-            circleRadius(7.8f),
-            circleColor(Color.WHITE)
-        )
-    )
-    st.addLayer(
-        CircleLayer("user-loc-core", "user-loc-src").withProperties(
-            circleRadius(5.2f),
-            circleColor(Color.parseColor("#3DAEE9"))
-        )
-    )
-
-    st.addLayer(
-        CircleLayer("head-halo", "head-src").withProperties(
-            circleRadius(13f),
-            circleColor(Color.parseColor("#926EE4")),
-            circleOpacity(0.32f)
-        )
-    )
-    st.addLayer(
-        CircleLayer("head-ring", "head-src").withProperties(
-            circleRadius(7.5f),
-            circleColor(Color.WHITE)
-        )
-    )
-    st.addLayer(
-        CircleLayer("head-core", "head-src").withProperties(
-            circleRadius(4.8f),
-            circleColor(Color.parseColor("#926EE4"))
-        )
-    )
+private fun addCircleDotTriplet(
+    st: Style,
+    prefix: String,
+    haloR: Float,
+    hex: String,
+    haloAlpha: Float,
+    ringR: Float,
+    coreR: Float
+) {
+    val src = "$prefix-src"
+    val col = Color.parseColor(hex)
+    st.addLayer(CircleLayer("$prefix-halo", src).withProperties(circleRadius(haloR), circleColor(col), circleOpacity(haloAlpha)))
+    st.addLayer(CircleLayer("$prefix-ring", src).withProperties(circleRadius(ringR), circleColor(Color.WHITE)))
+    st.addLayer(CircleLayer("$prefix-core", src).withProperties(circleRadius(coreR), circleColor(col)))
 }
 
 private fun baseLineLayer(id: String, src: String, hex: String, width: Float): LineLayer =
